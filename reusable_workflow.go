@@ -178,21 +178,40 @@ type ReusableWorkflowCacheAccess struct {
 	Uses string
 	// SourceUses preserves the local reference's source spelling for diagnostics.
 	SourceUses string
+	// Operations lists official cache action names used by this job's steps.
+	Operations []string
 }
 
-func (m *ReusableWorkflowMetadata) recordJobCacheAccess(id string, mode *CacheMode, uses string) {
+func (m *ReusableWorkflowMetadata) recordJobCacheAccess(id string, mode *CacheMode, uses string, steps []*Step) {
 	local, ok := workflowCallUsesLocalSpec(uses)
 	if !ok {
 		local = ""
 		uses = ""
 	}
-	if mode == nil && local == "" {
+	operations := collectCacheOperations(nil, steps)
+	if mode == nil && local == "" && len(operations) == 0 {
 		return
 	}
 	if m.JobCacheAccess == nil {
 		m.JobCacheAccess = map[string]ReusableWorkflowCacheAccess{}
 	}
-	m.JobCacheAccess[id] = ReusableWorkflowCacheAccess{Mode: mode, Uses: local, SourceUses: uses}
+	m.JobCacheAccess[id] = ReusableWorkflowCacheAccess{Mode: mode, Uses: local, SourceUses: uses, Operations: operations}
+}
+
+func collectCacheOperations(operations []string, steps []*Step) []string {
+	for _, step := range steps {
+		switch exec := step.Exec.(type) {
+		case *ExecAction:
+			if exec.Uses != nil {
+				if name := cacheActionName(exec.Uses.Value); name != "" {
+					operations = append(operations, name)
+				}
+			}
+		case *ExecParallel:
+			operations = collectCacheOperations(operations, exec.Steps)
+		}
+	}
+	return operations
 }
 
 // LocalReusableWorkflowCache is a cache for local reusable workflow metadata files. It avoids find/read/parse
@@ -382,7 +401,7 @@ func (c *LocalReusableWorkflowCache) WriteWorkflowCallEventFromWorkflow(wpath st
 			if j.WorkflowCall != nil && j.WorkflowCall.Uses != nil {
 				uses = j.WorkflowCall.Uses.Value
 			}
-			m.recordJobCacheAccess(j.ID.Value, effectiveCacheMode(w.CacheMode, j.CacheMode), uses)
+			m.recordJobCacheAccess(j.ID.Value, effectiveCacheMode(w.CacheMode, j.CacheMode), uses, j.Steps)
 			p := wp
 			if j.Permissions != nil {
 				p = resolvePermissionsAST(j.Permissions)
@@ -500,6 +519,7 @@ func parseReusableWorkflowMetadata(src []byte) (*ReusableWorkflowMetadata, error
 
 	wp := resolvePermissionsYAML(&w.Permissions)
 	wc := cacheModeFromYAML(&w.CacheMode)
+	stepParser := parser{sourceLines: splitSourceLines(src)}
 	if w.Jobs.Kind == yaml.MappingNode {
 		seenJobs := map[string]bool{}
 		for i := 0; i+1 < len(w.Jobs.Content); i += 2 {
@@ -516,6 +536,7 @@ func parseReusableWorkflowMetadata(src []byte) (*ReusableWorkflowMetadata, error
 			mode, uses := wc, ""
 			stepsOnly := false
 			seenKeys := map[string]bool{}
+			var steps []*Step
 			for k := 0; k+1 < len(job.Content); k += 2 {
 				key := job.Content[k].Value
 				// parseMapping keeps the first occurrence after reporting a duplicate.
@@ -527,6 +548,8 @@ func parseReusableWorkflowMetadata(src []byte) (*ReusableWorkflowMetadata, error
 					stepsOnly = true
 				}
 				switch key {
+				case "steps":
+					steps = stepParser.parseSteps(job.Content[k+1])
 				case "permissions":
 					p = resolvePermissionsYAML(job.Content[k+1])
 				case "cache-mode":
@@ -543,7 +566,7 @@ func parseReusableWorkflowMetadata(src []byte) (*ReusableWorkflowMetadata, error
 			if stepsOnly {
 				uses = ""
 			}
-			m.recordJobCacheAccess(id.Value, mode, uses)
+			m.recordJobCacheAccess(id.Value, mode, uses, steps)
 			if p.kind != permissionsDeclared || len(p.levels) == 0 {
 				continue
 			}
