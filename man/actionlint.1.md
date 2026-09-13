@@ -2,7 +2,7 @@
 title: actionlint
 section: 1
 header: General Commands Manual
-footer: actionlint 1.16.1
+footer: actionlint 1.17.0
 ---
 
 # NAME
@@ -313,7 +313,7 @@ Detailed documentation for this release and current installation options are ava
 
 ## Checks
 
-https://github.com/kjanat/actionlint/blob/v1.16.1/docs/checks.md
+https://github.com/kjanat/actionlint/blob/v1.17.0/docs/checks.md
 
 Full list of all checks done by actionlint with example inputs, outputs, and playground links.
 
@@ -321,31 +321,31 @@ Full list of all checks done by actionlint with example inputs, outputs, and pla
 
 https://github.com/kjanat/actionlint/blob/master/docs/install.md
 
-Installation instructions for npm, Homebrew, AUR, Scoop, mise, release archives, the download
+Installation instructions for npm, Homebrew, AUR, Scoop, aqua, mise, release archives, the download
 script, Docker, and Go, plus the status of WinGet and upstream-only package names.
 
 ## Usage
 
-https://github.com/kjanat/actionlint/blob/v1.16.1/docs/usage.md
+https://github.com/kjanat/actionlint/blob/v1.17.0/docs/usage.md
 
 CLI usage, shell completion, output templates, the GitHub Action, Docker images, and editor
 and CI integrations.
 
 ## Configuration
 
-https://github.com/kjanat/actionlint/blob/v1.16.1/docs/config.md
+https://github.com/kjanat/actionlint/blob/v1.17.0/docs/config.md
 
 Repository configuration, runner labels, variables, secrets, and opt-in policy checks.
 
 ## Go API
 
-https://github.com/kjanat/actionlint/blob/v1.16.1/docs/api.md
+https://github.com/kjanat/actionlint/blob/v1.17.0/docs/api.md
 
 How to use actionlint as Go library.
 
 ## References
 
-https://github.com/kjanat/actionlint/blob/v1.16.1/docs/reference.md
+https://github.com/kjanat/actionlint/blob/v1.17.0/docs/reference.md
 
 Links to resources.
 
@@ -375,7 +375,7 @@ download script:
 ```yaml
 - name: Check workflow files
   run: |
-    bash <(curl -fsSL https://raw.githubusercontent.com/kjanat/actionlint/HEAD/scripts/download-actionlint.bash) latest
+    bash <(curl -fsSL https://raw.githubusercontent.com/kjanat/actionlint/662318dd6bbd9c0c120e35b03168bc1be69bf428/scripts/download-actionlint.bash) latest
     ./actionlint -color
   shell: bash
 ```

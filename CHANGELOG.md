@@ -2,6 +2,16 @@
 
 # Unreleased
 
+<a id="v1.17.0"></a>
+
+## [v1.17.0](https://github.com/kjanat/actionlint/releases/tag/v1.17.0) - 2026-09-13
+
+- Resolve Go dependency licenses from remote module sources when generating release SBOMs. Document remaining unknown SPDX fields. (kjanat/actionlint#167)
+
+- Document installation through aqua and mise's aqua backend, including registry availability, and pin download-script examples to a commit independently of the requested binary version. (kjanat/actionlint#168)
+
+- **Upgrade note:** the three new cache safety policies are enabled even without a configuration file and can make previously clean workflows exit with status 1. Disable individual checks with `policy.cache-write-untrusted: false`, `policy.cache-call-unrestricted: false`, or `policy.cache-operation: false`, or document a reviewed inline exception. Existing opt-in policies retain their defaults. (kjanat/actionlint#165)
+
 - Support current workflow schema fields and expression objects, including workflow descriptions, cancellation timeouts, image-version filters, stacked pull requests, empty choice options, disabled service images, and UTC timezone aliases.
 
 - Validate action manifests against generated runner schema constraints. Correct workflow expression contexts, matrix inference, function arity, expression depth, scalar decoding, required flags, schedule entries, and step ID checks.
@@ -10,9 +20,13 @@
 
 - Enable cache safety policies by default: report explicit writes on low-trust triggers that can use default-branch caches, reusable calls without an explicit cache limit on those triggers, and official cache actions disabled by an explicit mode. Each policy can be disabled in configuration or suppressed on a specific line with a rule name and a reason.
 
-- Add `policy.disallow-suppressions` to prohibit inline cache exceptions for all or selected rules. Report the prohibited comment, retain the original violation, or both.
+- Add `policy.disallow-suppressions` to prohibit inline cache exceptions for all or selected rules. Select `report: suppression`, `violation`, or `all` to report the prohibited comment, retain the original violation, or report both. (kjanat/actionlint#165)
 
 - Support workflow- and job-level `cache-mode` values, including jobs that call reusable workflows. Check explicit cache access limits through nested local workflow calls, preserving job overrides and the distinction between omitted settings and `none`. Report invalid values and types at their source locations. (kjanat/actionlint#163)
+
+- Report cache operations disabled by a caller's explicit limit through nested local reusable workflows, including parallel child steps. Preserve the original reusable-workflow reference in diagnostics and report lookup failures consistently regardless of file analysis order. (kjanat/actionlint#164; kjanat/actionlint#165)
+
+[Changes][v1.17.0]
 
 <a id="v1.16.1"></a>
 
@@ -2527,6 +2541,7 @@ See documentation for more details:
 
 [Changes][v1.0.0]
 
+[v1.17.0]: https://github.com/kjanat/actionlint/compare/v1.16.1...v1.17.0
 [v1.16.1]: https://github.com/kjanat/actionlint/compare/v1.16.0...v1.16.1
 [v1.16.0]: https://github.com/kjanat/actionlint/compare/v1.15.1...v1.16.0
 [v1.15.1]: https://github.com/kjanat/actionlint/compare/v1.15.0...v1.15.1
