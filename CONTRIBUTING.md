@@ -56,9 +56,6 @@ Comment Cop may leave automated style suggestions on added comments and document
 and its suggestions are advisory. If a finding is a false positive, you are welcome to resolve the review thread
 without changing the text. Keep explanations that help readers understand the code.
 
-Special thanks to the native English speakers for proofreading the documentation and error messages, as the author is not
-proficient in English.
-
 ## Development
 
 `make` (3.81 or later) is useful to run each tasks and reduce redundant builds/tests.
