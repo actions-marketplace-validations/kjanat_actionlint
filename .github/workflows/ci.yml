@@ -1,0 +1,192 @@
+---
+name: CI
+on:
+  push: { branches: [master] }
+  pull_request: null
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions: { contents: read }
+defaults: { run: { shell: "bash --noprofile --norc -exo pipefail {0}" } }
+jobs:
+  nix: { uses: $/.github/workflows/nix.yml }
+  unit-tests:
+    name: Unit tests
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-26.04, ubuntu-26.04-arm, macos-latest, macos-26-intel, windows-2025-vs2026, windows-11-vs2026-arm] }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: &ActionsCheckout actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: &NoCreds { persist-credentials: false }
+      - parallel:
+          - uses: &SetupGo actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+            with: &GoMod { go-version-file: go.mod }
+          - uses: &SetupUv astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+            with: &NoCache { enable-cache: false }
+      - name: Install pyflakes
+        run: &InstallPyflakes uv tool install pyflakes; pyflakes --version
+      - &InstallShellCheck { name: Install ShellCheck, uses: $/.github/actions/setup-shellcheck }
+      - name: Install shells for completion tests on Linux
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh fish
+          zsh --version; fish --version
+      - run: go test -v ./...
+      # Check build without CGO
+      - run: go build ./cmd/actionlint
+        env: { CGO_ENABLED: 0 }
+  race:
+    name: Race detector and coverage
+    runs-on: ubuntu-latest
+    permissions: { contents: read, id-token: write }
+    steps:
+      - &ActCheckNocred { uses: *ActionsCheckout, with: *NoCreds }
+      - &GoGomod { uses: *SetupGo, with: *GoMod }
+      - *InstallShellCheck
+      - &Uv { uses: *SetupUv, with: *NoCache }
+      - &PyFlakes { name: Install pyflakes, run: *InstallPyflakes }
+
+      - run: go test -v -race -coverprofile coverage.txt -covermode=atomic ./...
+      - run: go tool cover -func ./coverage.txt
+
+      # Set -race for catching data races on dog fooding (#333)
+      - run: go build -race ./cmd/actionlint
+
+      - name: Dog fooding 🐶
+        # actionlint passes --norc to shellcheck, ignoring .shellcheckrc.
+        run: echo "::add-matcher::.github/actionlint-matcher.json"; ./actionlint -color -shellcheck 'shellcheck -o all'
+
+      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with: { use_oidc: true }
+  wasm:
+    name: Wasm
+    runs-on: ubuntu-latest
+    steps:
+      - *ActCheckNocred
+      - *GoGomod
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version-file: .node-version, package-manager-cache: false }
+      - &Runner { uses: kjanat/runner@8baa9ee978cfed038b98741749673c788ff161d1 } # v0.26.1
+      - &Pandoc { name: Install Pandoc, uses: $/.github/actions/setup-pandoc }
+      - name: Install JavaScript dependencies
+        run: runner install --frozen
+      - name: Build command manual
+        run: run make:man
+      - name: Build and test playground
+        run: run --dir playground -s make:build make:test
+      - name: Lint playground
+        run: run lint
+  release-snapshot:
+    name: Release snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: *ActionsCheckout
+        with: { fetch-depth: 0, persist-credentials: false }
+      - parallel:
+          - &Go { uses: *SetupGo, with: *GoMod }
+          - *Pandoc
+          - *Runner
+      - run: run make:man/actionlint.1
+      - name: Install syft for SBOM generation
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with: { version: v2.18.0, args: release --snapshot --clean }
+      - name: Smoke-test the linux/amd64 snapshot binary
+        run: ./dist/linux_linux_amd64_v1/actionlint -version
+  action-modules:
+    name: Action modules
+    runs-on: ubuntu-latest
+    steps:
+      - *ActCheckNocred
+      - uses: *SetupGo
+        with: { go-version: stable, check-latest: true }
+      # Self-contained modules under a dot-directory, which the go tool skips
+      # when expanding a ... pattern. Test each in place.
+      - name: Test and vet each action module
+        run: |
+          set -euo pipefail
+          for mod in .github/actions/*/go.mod; do
+            dir="$(dirname "${mod}")"
+            echo "::group::${dir}"
+            (cd "${dir}" && go vet ./... && go test ./...)
+            echo "::endgroup::"
+          done
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - *ActCheckNocred
+      - *Go
+      - parallel:
+          - *Uv
+          - *InstallShellCheck
+          - name: Install golangci-lint
+            uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+            with: { version: v2.13.1, install-only: true }
+          - *Runner
+      - *PyFlakes
+      - run: go mod tidy -diff
+      - name: Build through Makefile
+        run: run make:build
+        env: &SkipGoGen { SKIP_GO_GENERATE: "true" }
+      - run: run make:lint
+        env: *SkipGoGen
+      - name: Lint bash scripts
+        run: shellcheck ./scripts/*.bash
+  docker:
+    name: Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - *ActCheckNocred
+      - name: Build image
+        uses: &DockerBuildPush docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with: { load: true, push: false, tags: actionlint:test }
+      - name: Test Docker image
+        run: docker container run
+          --mount type=bind,source="${PWD}",target=/w
+          -- actionlint:test -color -verbose
+      - name: Lint Dockerfile with hadolint
+        run: docker run --rm -i hadolint/hadolint hadolint --ignore DL3018 --strict-labels
+          --require-label org.opencontainers.image.source:url
+          --require-label org.opencontainers.image.licenses:spdx
+          - < Dockerfile
+      - name: Lint Dockerfile with droast
+        uses: immanuwell/dockerfile-roast@1c87b2aa189338c24db4acde40864dae8994de8f # 1.7.0
+  action:
+    name: GitHub Action
+    runs-on: ubuntu-latest
+    steps:
+      - *ActCheckNocred
+      - name: Build action image
+        uses: *DockerBuildPush
+        with: { context: ., target: action, load: true, tags: actionlint-action:test }
+      - name: Test action image
+        run: ./scripts/test-action.bash actionlint-action:test
+  pre-commit-shellcheck:
+    name: pre-commit ShellCheck integration
+    runs-on: ubuntu-latest
+    steps:
+      - *ActCheckNocred
+      - parallel: [*Go, *Uv]
+      - parallel:
+          - run: uv tool install pre-commit
+          - name: Remove the runner's ShellCheck so only the hook's own can be found
+            run: sudo apt-get remove -y shellcheck
+      - name: Confirm shellcheck is not on PATH
+        run: if command -v shellcheck; then echo "shellcheck is still on PATH; test invalid" >&2; exit 1; fi
+      - name: Confirm actionlint-shellcheck reports a fixture's SC2086
+        run: |
+          cat > .github/workflows/_pre-commit-shellcheck-fixture.yml <<'FIXTURE'
+          name: CI
+          on: push
+          jobs: {fixture: {runs-on: ubuntu-latest, steps: [{run: "echo $GITHUB_SHA"}]}}
+          FIXTURE
+          set +e
+          pre-commit try-repo . actionlint-shellcheck --files .github/workflows/_pre-commit-shellcheck-fixture.yml --verbose > pre-commit-output.txt 2>&1
+          status=$?
+          set -e
+          cat pre-commit-output.txt
+          rm .github/workflows/_pre-commit-shellcheck-fixture.yml
+          test "${status}" -ne 0
+          grep -q SC2086 pre-commit-output.txt

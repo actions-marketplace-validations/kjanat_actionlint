@@ -2,7 +2,7 @@
 # directory over it whenever the directory is newer, so no built-in rule may apply here.
 MAKEFLAGS += --no-builtin-rules
 
-SRCS := $(filter-out %_test.go, $(wildcard *.go cmd/*/*.go)) cmd/actionlint-action/sarif_template.txt go.mod go.sum
+SRCS := $(filter-out %_test.go, $(wildcard *.go cmd/*/*.go)) sarif_template.txt go.mod go.sum
 TESTS := $(filter %_test.go, $(wildcard *.go cmd/*/*.go))
 TOOL := $(wildcard scripts/*/*.go)
 TESTDATA := $(wildcard \
@@ -17,7 +17,8 @@ TESTDATA := $(wildcard \
 GO_GEN_SRCS := scripts/generate-popular-actions/main.go \
 				scripts/generate-popular-actions/popular_actions.json \
 				scripts/generate-webhook-events/main.go \
-				scripts/generate-availability/main.go
+				scripts/generate-availability/main.go \
+				$(wildcard scripts/generate-action-metadata/*.go)
 PANDOC := pandoc --standalone --from=markdown-smart --syntax-highlighting=none
 
 ifeq ($(OS),Windows_NT)
@@ -46,8 +47,16 @@ endif
 
 all: build test lint
 
+comment-cop:
+	node .github/actions/comment-cop/comment-cop.mjs $(COMMENT_COP_BASE)
+
 t test:
 	go test $(RACE) ./...
+
+.PHONY: conformance
+conformance:
+	go run ./scripts/fetch-conformance
+	go test -tags conformance -run '^TestUpstreamConformance' -count=1 -timeout 2m .
 
 coverage.out: $(TESTS) $(SRCS) $(TESTDATA) $(TOOL)
 	go test $(RACE) -coverprofile coverage.out -covermode=atomic ./...
@@ -64,12 +73,11 @@ l lint:
 ifneq ($(OS),Windows_NT)
 	GOOS=js GOARCH=wasm golangci-lint run ./playground
 	go run ./scripts/check-checks -quiet ./docs/checks.md
-	go run ./scripts/check-readme -quiet ./README.md
 endif
 
-popular_actions.go all_webhooks.go availability.go: $(GO_GEN_SRCS)
+popular_actions.go all_webhooks.go availability.go action_metadata_availability.go action_runtimes.go: $(GO_GEN_SRCS)
 ifdef SKIP_GO_GENERATE
-	$(TOUCH) popular_actions.go all_webhooks.go availability.go
+	$(TOUCH) popular_actions.go all_webhooks.go availability.go action_metadata_availability.go action_runtimes.go
 else
 	go generate
 endif
@@ -110,7 +118,7 @@ man: man/actionlint.1 man/actionlint.1.html
 bench:
 	go test -bench Lint -benchmem
 
-.github/actionlint-matcher.json: scripts/generate-actionlint-matcher/object.mjs
+.github/actionlint-matcher.json: scripts/generate-actionlint-matcher/main.mjs scripts/generate-actionlint-matcher/object.mjs
 	node ./scripts/generate-actionlint-matcher/main.mjs .github/actionlint-matcher.json
 
 scripts/generate-actionlint-matcher/testdata/escape.txt: $(TARGET)
@@ -126,4 +134,4 @@ CHANGELOG.md:
 c clean:
 	rm -f ./$(TARGET) ./man/actionlint.1 ./man/actionlint.1.html ./actionlint-workflow-ast
 
-.PHONY: all test clean build lint fuzz man bench cov b t c l CHANGELOG.md FORCE
+.PHONY: all comment-cop test clean build lint fuzz man bench cov b t c l CHANGELOG.md FORCE

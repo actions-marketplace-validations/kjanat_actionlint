@@ -444,11 +444,14 @@ func (rule *RuleAction) checkRepoAction(spec string, exec *ExecAction) {
 	meta, ok := PopularActions[spec]
 	if !ok {
 		if _, ok := OutdatedPopularActionSpecs[spec]; ok {
-			rule.Errorf(exec.Uses.Pos, "the runner of %q action is too old to run on GitHub Actions. update the action's version to fix this issue", spec)
+			rule.Errorf(exec.Uses.Pos, "the runtime or service used by %q action is retired on GitHub.com. update the action's version to fix this issue", spec)
 			return
 		}
 		rule.Debug("This action is not found in popular actions data set: %s", spec)
 		return
+	}
+	if problem := actionRuntimeProblem(meta.Runs.Using); problem != "" {
+		rule.Errorf(exec.Uses.Pos, "%s. update the version of action %q", problem, spec)
 	}
 	if meta.SkipInputs {
 		rule.Debug("This action skips to check inputs: %s", spec)
@@ -511,20 +514,9 @@ func (rule *RuleAction) checkLocalDockerActionRuns(r *ActionMetadataRuns, dir, n
 			rule.Errorf(pos, `the local file %q referenced from "image" key must be named "Dockerfile" in %q action. the action is defined at %q`, r.Image, name, dir)
 		}
 	}
-	rule.checkRunsFileExists(r.PreEntrypoint, dir, "pre-entrypoint", name, pos)
-	rule.checkRunsFileExists(r.Entrypoint, dir, "entrypoint", name, pos)
-	rule.checkRunsFileExists(r.PostEntrypoint, dir, "post-entrypoint", name, pos)
-	rule.checkInvalidRunsProps(pos, r, "Docker", name, dir, []string{"main", "pre", "pre-if", "post", "post-if", "steps"})
+	// Entrypoints resolve inside the container image; only a local Dockerfile can be checked here.
+	rule.checkInvalidRunsProps(pos, r, "Docker", name, dir, []string{"main", "pre", "post", "steps"})
 }
-
-// Composite action steps are one of two disjoint mappings in the runner's template schema.
-// https://github.com/actions/runner/blob/main/src/Runner.Worker/action_yaml.json
-// Agents: https://github.com/actions/runner/raw/refs/heads/main/src/Runner.Worker/action_yaml.json
-var (
-	compositeRunStepKeys  = []string{"continue-on-error", "env", "id", "if", "name", "run", "shell", "working-directory"}
-	compositeUsesStepKeys = []string{"continue-on-error", "env", "id", "if", "name", "uses", "with"}
-	compositeAnyStepKeys  = []string{"continue-on-error", "env", "id", "if", "name", "run", "shell", "uses", "with", "working-directory"}
-)
 
 // https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#runs-for-composite-actions
 // Agents: https://docs.github.com/api/article/body?pathname=/en/actions/reference/workflows-and-actions/metadata-syntax
@@ -533,7 +525,18 @@ func (rule *RuleAction) checkLocalCompositeActionRuns(meta *ActionMetadata, pos 
 	if r.Steps == nil {
 		rule.missingRunsProp(pos, "steps", "Composite", meta.Name, meta.Dir())
 	}
+	ids := map[string]bool{}
 	for i, s := range r.Steps {
+		if s.id != nil && s.id.Value != "" {
+			id := s.id.Value
+			switch {
+			case !jobIDPattern.MatchString(id) || len(id) >= 100 || strings.HasPrefix(id, "__"):
+				rule.compositeStepErrorfAt(meta, i, s.id.Line, s.id.Column, "has invalid ID %q; IDs must start with a letter or _, contain only alphanumeric characters, - or _, be shorter than 100 characters, and must not start with __", id)
+			case ids[strings.ToLower(id)]:
+				rule.compositeStepErrorfAt(meta, i, s.id.Line, s.id.Column, "has duplicate ID %q; step IDs are case insensitive", id)
+			}
+			ids[strings.ToLower(id)] = true
+		}
 		rule.checkCompositeActionStep(meta, s, i)
 	}
 	rule.checkInvalidRunsProps(pos, r, "Composite", meta.Name, meta.Dir(), []string{"main", "pre", "pre-if", "post", "post-if", "image", "pre-entrypoint", "entrypoint", "post-entrypoint", "args", "env"})
@@ -542,11 +545,45 @@ func (rule *RuleAction) checkLocalCompositeActionRuns(meta *ActionMetadata, pos 
 // compositeStepErrorf reports an error at the step's own position in the action metadata file
 // instead of at the "uses" site in the workflow being linted.
 func (rule *RuleAction) compositeStepErrorf(meta *ActionMetadata, s *ActionCompositeStep, idx int, format string, args ...any) {
+	rule.compositeStepErrorfAt(meta, idx, s.Line, s.Column, format, args...)
+}
+
+// compositeStepErrorfAt is compositeStepErrorf with an explicit position, used to point at a
+// specific key's value inside the step.
+func (rule *RuleAction) compositeStepErrorfAt(meta *ActionMetadata, idx, line, col int, format string, args ...any) {
 	m := fmt.Sprintf(format, args...)
-	err := errorAt(&Pos{Line: s.Line, Col: s.Column}, rule.name, fmt.Sprintf(`step %d in "runs.steps" section in metadata of %q action %s`, idx+1, meta.Name, m))
+	err := errorAt(&Pos{Line: line, Col: col}, rule.name, fmt.Sprintf(`step %d in "runs.steps" section in metadata of %q action %s`, idx+1, meta.Name, m))
 	err.Filepath = meta.Path()
 	err.source = meta.src
 	rule.errs = append(rule.errs, err)
+}
+
+// metadataErrorfAt reports an error at an explicit position inside the action metadata file
+// instead of at the "uses" site in the workflow being linted.
+func (rule *RuleAction) metadataErrorfAt(meta *ActionMetadata, line, col int, format string, args ...any) {
+	err := errorfAt(&Pos{Line: line, Col: col}, rule.name, format, args...)
+	err.Filepath = meta.Path()
+	err.source = meta.src
+	rule.errs = append(rule.errs, err)
+}
+
+func (rule *RuleAction) checkActionInputDefaults(meta *ActionMetadata) {
+	const field = "inputs.*.default"
+	for _, kv := range meta.InputDefaults {
+		for _, v := range actionExpressionViolations(kv.Value.Value, false, field) {
+			message := v.message
+			if v.context != "" {
+				message = fmt.Sprintf(
+					`uses context %q which is not available in input defaults. available contexts are %s`,
+					v.context, quotes(actionMetadataAvailability[field].contexts),
+				)
+			}
+			rule.metadataErrorfAt(
+				meta, kv.Value.Line, kv.Value.Column,
+				`default value of input %q in metadata of %q action %s`, kv.Name, meta.Name, message,
+			)
+		}
+	}
 }
 
 func (rule *RuleAction) checkCompositeActionStepKeys(meta *ActionMetadata, s *ActionCompositeStep, idx int, allowed []string) {
@@ -579,7 +616,7 @@ func (rule *RuleAction) checkCompositeActionStep(meta *ActionMetadata, s *Action
 	case hasRun && hasUses:
 		rule.compositeStepErrorf(meta, s, idx, `cannot have both "run" and "uses" keys`)
 	case hasRun:
-		if s.run == nil {
+		if s.Run == nil {
 			rule.compositeStepErrorf(meta, s, idx, `must have a string value at "run" key`)
 		}
 		if !hasShell {
@@ -587,7 +624,7 @@ func (rule *RuleAction) checkCompositeActionStep(meta *ActionMetadata, s *Action
 		} else if s.shell == nil {
 			rule.compositeStepErrorf(meta, s, idx, `must have a string value at "shell" key`)
 		}
-		rule.checkCompositeActionStepKeys(meta, s, idx, compositeRunStepKeys)
+		rule.checkCompositeActionStepKeys(meta, s, idx, actionMetadataKeys["run-step"])
 	case hasUses:
 		if s.Uses == nil {
 			rule.compositeStepErrorf(meta, s, idx, `must have a string value at "uses" key`)
@@ -596,10 +633,61 @@ func (rule *RuleAction) checkCompositeActionStep(meta *ActionMetadata, s *Action
 		} else if u, _, _ := strings.Cut(*s.Uses, "@"); strings.HasSuffix(u, ".yml") || strings.HasSuffix(u, ".yaml") {
 			rule.compositeStepErrorf(meta, s, idx, `cannot call reusable workflow %q at "uses" key`, *s.Uses)
 		}
-		rule.checkCompositeActionStepKeys(meta, s, idx, compositeUsesStepKeys)
+		rule.checkCompositeActionStepKeys(meta, s, idx, actionMetadataKeys["uses-step"])
 	default:
 		rule.compositeStepErrorf(meta, s, idx, `requires either "run" or "uses" key`)
-		rule.checkCompositeActionStepKeys(meta, s, idx, compositeAnyStepKeys)
+		keys := slices.Concat(actionMetadataKeys["run-step"], actionMetadataKeys["uses-step"])
+		slices.Sort(keys)
+		rule.checkCompositeActionStepKeys(meta, s, idx, slices.Compact(keys))
+	}
+
+	rule.checkCompositeActionStepExprs(meta, s, idx)
+}
+
+func (rule *RuleAction) checkCompositeActionStepExprs(meta *ActionMetadata, s *ActionCompositeStep, idx int) {
+	report := func(key, field string, v *ActionExprString, bare bool) {
+		if v == nil {
+			return
+		}
+		for _, violation := range actionExpressionViolations(v.Value, bare, "runs.steps.*."+field) {
+			if ctx := violation.context; ctx != "" {
+				rule.compositeStepErrorfAt(
+					meta, idx, v.Line, v.Column,
+					`uses context %q at %q key which is not available in a composite action. %s`,
+					ctx, key, compositeStepContextHint(ctx),
+				)
+			} else {
+				rule.compositeStepErrorfAt(meta, idx, v.Line, v.Column, `%s at %q key`, violation.message, key)
+			}
+		}
+	}
+
+	report("if", "if", s.If, true)
+	report("run", "run", s.Run, false)
+	report("working-directory", "working-directory", s.WorkingDirectory, false)
+	report("name", "name", s.StepName, false)
+	report("shell", "shell", s.shell, false)
+	report("continue-on-error", "continue-on-error", s.continueOnError, false)
+	report("with", "with", s.withExpr, false)
+	report("env", "env", s.envExpr, false)
+	for _, kv := range s.With {
+		report(`with.`+kv.Name, "with.*", &kv.Value, false)
+	}
+	for _, kv := range s.Env {
+		report(`env.`+kv.Name, "env.*", &kv.Value, false)
+	}
+}
+
+func compositeStepContextHint(ctx string) string {
+	switch ctx {
+	case "secrets":
+		return "pass secrets to the action as inputs instead"
+	case "vars":
+		return "the runner does not provide the vars context to actions; pass the values as inputs instead"
+	case "needs":
+		return "the needs context is only available in workflow jobs"
+	default:
+		return "see https://docs.github.com/en/actions/reference/workflows-and-actions/contexts for details"
 	}
 }
 
@@ -642,20 +730,26 @@ func (rule *RuleAction) checkLocalActionInputs(meta *ActionMetadata, pos *Pos) {
 // https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#runs
 // Agents: https://docs.github.com/api/article/body?pathname=/en/actions/reference/workflows-and-actions/metadata-syntax
 func (rule *RuleAction) checkLocalActionRuns(meta *ActionMetadata, pos *Pos) {
-	switch r := &meta.Runs; r.Using {
+	r := &meta.Runs
+	using := strings.ToLower(r.Using)
+	switch using {
 	case "":
-		rule.Errorf(pos, `"runs.using" is missing in local action %q defined at %q`, meta.Name, meta.Dir())
+		if r.Plugin == "" {
+			rule.Errorf(pos, `"runs.using" is missing in local action %q defined at %q`, meta.Name, meta.Dir())
+		}
 	case "docker":
 		rule.checkLocalDockerActionRuns(r, meta.Dir(), meta.Name, pos)
 	case "composite":
 		rule.checkLocalCompositeActionRuns(meta, pos)
-	case "node20", "node24":
-		rule.checkLocalJavaScriptActionRuns(r, meta.Dir(), meta.Name, pos)
 	default:
-		rule.Errorf(pos, `invalid runner name %q at runs.using in %q action defined at %q. valid runners are "composite", "docker", "node20", and "node24". see https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#runs`, r.Using, meta.Name, meta.Dir())
+		if _, ok := ActionRuntimes[using]; !ok {
+			rule.Errorf(pos, `invalid runner name %q at runs.using in %q action defined at %q. valid runners are %s. see https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#runs`, r.Using, meta.Name, meta.Dir(), validActionRuntimes())
+		} else if problem := actionRuntimeProblem(using); problem != "" {
+			rule.Errorf(pos, "%s. update runs.using in local action %q to a current runtime", problem, meta.Name)
+		}
 
-		// Probably invalid version of Node.js runner. Assume it is JavaScript action to find as many errors as possible
-		if strings.HasPrefix(r.Using, "node") {
+		// Validate JavaScript fields even when the runtime declaration has a diagnostic.
+		if strings.HasPrefix(using, "node") {
 			rule.checkLocalJavaScriptActionRuns(r, meta.Dir(), meta.Name, pos)
 		}
 	}
@@ -693,6 +787,7 @@ func (rule *RuleAction) checkDockerAction(uri string, exec *ExecAction) {
 // https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions
 // Agents: https://docs.github.com/api/article/body?pathname=/en/actions/reference/workflows-and-actions/metadata-syntax
 func (rule *RuleAction) checkLocalActionMetadata(meta *ActionMetadata, action *ExecAction) {
+	rule.checkActionMetadataSchema(meta)
 	if meta.Name == "" {
 		rule.Errorf(action.Uses.Pos, "name is required in action metadata %q", meta.Path())
 	}
@@ -722,6 +817,7 @@ func (rule *RuleAction) checkLocalActionMetadata(meta *ActionMetadata, action *E
 		}
 	}
 	rule.checkLocalActionInputs(meta, action.Uses.Pos)
+	rule.checkActionInputDefaults(meta)
 	rule.checkLocalActionRuns(meta, action.Uses.Pos)
 }
 
@@ -750,8 +846,20 @@ func (rule *RuleAction) checkLocalAction(localSpec, displaySpec string, action *
 var reNewlineWithIndent = regexp.MustCompile(`\s*\r?\n\s*`)
 
 func (rule *RuleAction) checkAction(meta *ActionMetadata, exec *ExecAction, describe func(*ActionMetadata) string) {
+	inputs, known := exec.Inputs, exec.InputsExpression == nil
+	if exec.InputsExpression != nil {
+		if value, ok := workflowExpressionLiteral(exec.InputsExpression); ok {
+			if mapping, ok := value.(map[string]any); ok {
+				known = true
+				inputs = make(map[string]*Input, len(mapping))
+				for name := range mapping {
+					inputs[strings.ToLower(name)] = &Input{Name: &String{Value: name, Pos: exec.InputsExpression.Pos}}
+				}
+			}
+		}
+	}
 	// Check specified inputs are defined in action's inputs spec
-	for id, i := range exec.Inputs {
+	for id, i := range inputs {
 		m, ok := meta.Inputs[id]
 		if !ok {
 			ns := make([]string, 0, len(meta.Inputs))
@@ -783,8 +891,8 @@ func (rule *RuleAction) checkAction(meta *ActionMetadata, exec *ExecAction, desc
 
 	// Check mandatory inputs are specified
 	for id, i := range meta.Inputs {
-		if i.Required {
-			if _, ok := exec.Inputs[id]; !ok {
+		if i.Required && known {
+			if _, ok := inputs[id]; !ok {
 				ns := make([]string, 0, len(meta.Inputs))
 				for _, i := range meta.Inputs {
 					if i.Required {

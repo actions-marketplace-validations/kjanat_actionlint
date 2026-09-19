@@ -173,6 +173,11 @@ var BuiltinFuncSignatures = map[string][]*FuncSignature{
 		IsConstFunc: true,
 	}},
 	"format": {{
+		Name:        "format",
+		Ret:         StringType{},
+		Params:      []ExprType{StringType{}},
+		IsConstFunc: true,
+	}, {
 		Name: "format",
 		Ret:  StringType{},
 		Params: []ExprType{
@@ -183,6 +188,18 @@ var BuiltinFuncSignatures = map[string][]*FuncSignature{
 		IsConstFunc:          true,
 	}},
 	"join": {
+		{
+			Name:        "join",
+			Ret:         StringType{},
+			Params:      []ExprType{StringType{}},
+			IsConstFunc: true,
+		},
+		{
+			Name:        "join",
+			Ret:         StringType{},
+			Params:      []ExprType{StringType{}, StringType{}},
+			IsConstFunc: true,
+		},
 		{
 			Name: "join",
 			Ret:  StringType{},
@@ -271,7 +288,8 @@ var builtinSecretProps = map[string]ExprType{
 // BuiltinGlobalVariableTypes defines types of all global variables. All context variables are
 // documented at https://docs.github.com/en/actions/learn-github-actions/contexts
 var BuiltinGlobalVariableTypes = map[string]ExprType{
-	// https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/accessing-contextual-information-about-workflow-runs#github-context
+	// https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#github-context
+	// Agents: https://docs.github.com/api/article/body?pathname=/en/actions/reference/workflows-and-actions/contexts
 	"github": NewStrictObjectType(map[string]ExprType{
 		"action":                    StringType{},
 		"action_path":               StringType{}, // Note: Composite actions only
@@ -281,7 +299,9 @@ var BuiltinGlobalVariableTypes = map[string]ExprType{
 		"actor":                     StringType{},
 		"actor_id":                  StringType{},
 		"api_url":                   StringType{},
-		"artifact_cache_size_limit": NumberType{}, // Note: Undocumented
+		"artifact_cache_size_limit": NumberType{}, // Note: Missing from the context reference
+		"artifacts":                 StringType{},
+		"artifacts_list":            StringType{},
 		"base_ref":                  StringType{},
 		"env":                       StringType{},
 		"event":                     NewEmptyObjectType(), // Note: Stricter type check for this payload would be possible
@@ -290,7 +310,7 @@ var BuiltinGlobalVariableTypes = map[string]ExprType{
 		"graphql_url":               StringType{},
 		"head_ref":                  StringType{},
 		"job":                       StringType{},
-		"output":                    StringType{}, // Note: Undocumented
+		"output":                    StringType{}, // Note: Runner-provided file command path missing from the context reference
 		"path":                      StringType{},
 		"ref":                       StringType{},
 		"ref_name":                  StringType{},
@@ -300,17 +320,17 @@ var BuiltinGlobalVariableTypes = map[string]ExprType{
 		"repository_id":             StringType{},
 		"repository_owner":          StringType{},
 		"repository_owner_id":       StringType{},
-		"repository_visibility":     StringType{}, // Note: Undocumented
+		"repository_visibility":     StringType{}, // Note: Missing from the context reference; documented as an OIDC claim
 		"repositoryurl":             StringType{}, // repositoryUrl
-		"retention_days":            NumberType{},
+		"retention_days":            StringType{},
 		"run_attempt":               StringType{},
 		"run_id":                    StringType{},
 		"run_number":                StringType{},
 		"secret_source":             StringType{},
 		"server_url":                StringType{},
 		"sha":                       StringType{},
-		"state":                     StringType{}, // Note: Undocumented
-		"step_summary":              StringType{}, // Note: Undocumented
+		"state":                     StringType{}, // Note: Runner-provided file command path missing from the context reference
+		"step_summary":              StringType{}, // Note: Runner-provided file command path missing from the context reference
 		"token":                     StringType{},
 		"triggering_actor":          StringType{},
 		"workflow":                  StringType{},
@@ -392,6 +412,7 @@ type ExprSemanticsChecker struct {
 	untrusted             *UntrustedInputChecker
 	availableContexts     []string
 	availableSpecialFuncs []string
+	jobCondition          bool
 	configVars            []string
 	configSecrets         []string
 }
@@ -576,6 +597,16 @@ func (sema *ExprSemanticsChecker) checkAvailableContext(n *VariableNode) {
 // Available function names for workflow keys can be obtained from actionlint.ContextAvailability.
 func (sema *ExprSemanticsChecker) SetSpecialFunctionAvailability(avail []string) {
 	sema.availableSpecialFuncs = avail
+}
+
+// SetWorkflowKeyAvailability selects workflow contexts, special functions, and
+// position-specific signatures. Job conditions allow job arguments to success
+// and failure; step and snapshot conditions require zero arguments.
+func (sema *ExprSemanticsChecker) SetWorkflowKeyAvailability(key string) {
+	contexts, functions := WorkflowKeyAvailability(key)
+	sema.SetContextAvailability(contexts)
+	sema.SetSpecialFunctionAvailability(functions)
+	sema.jobCondition = key == "jobs.<job_id>.if"
 }
 
 func (sema *ExprSemanticsChecker) checkSpecialFunctionAvailability(n *FuncCallNode) {
@@ -891,8 +922,8 @@ func checkFuncSignature(n *FuncCallNode, sig *FuncSignature, args []ExprType) *E
 		}
 	}
 
-	// Note: Unlike many languages, this check does not allow 0 argument for the variable length
-	// parameter since it is useful for checking hashFiles() and format().
+	// A variadic signature requires its listed parameters; optional tails are
+	// represented by a separate overload, as with format(string).
 	if sig.VariableLengthParams {
 		rest := args[lp:]
 		p := sig.Params[lp-1]
@@ -971,6 +1002,20 @@ func (sema *ExprSemanticsChecker) checkFuncCall(n *FuncCallNode) ExprType {
 		}
 		sema.errorf(n, "undefined function %q. available functions are %s", n.Callee, sortedQuotes(ss))
 		return AnyType{}
+	}
+
+	// The runner's expression parser limits these variadic functions to 255 arguments.
+	// https://github.com/actions/runner/blob/759385a3510197a58b5c08dc1f373b74b9f4643b/src/Sdk/DTExpressions2/Expressions2/ExpressionConstants.cs
+	if (callee == "hashfiles" || callee == "format" || callee == "case") && len(n.Args) > 255 {
+		sema.errorf(n, "function %q takes at most 255 arguments but %d arguments are given", n.Callee, len(n.Args))
+	}
+	if sema.jobCondition && (callee == "success" || callee == "failure") && len(n.Args) > 0 {
+		sigs = []*FuncSignature{{
+			Name:                 callee,
+			Ret:                  BoolType{},
+			Params:               []ExprType{StringType{}},
+			VariableLengthParams: true,
+		}}
 	}
 
 	tys := make([]ExprType, 0, len(n.Args))

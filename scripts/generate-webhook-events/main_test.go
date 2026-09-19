@@ -5,6 +5,8 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,15 +40,19 @@ func TestWriteStdoutOK(t *testing.T) {
 
 func TestAddWebhookOnlyActivityTypes(t *testing.T) {
 	events := map[string][]string{
-		"merge_group": nil,
-		"push":        {},
+		"merge_group":         nil,
+		"push":                {},
+		"pull_request":        {"opened"},
+		"pull_request_target": {"stacked"},
 	}
 	addWebhookOnlyActivityTypes(events)
 	addWebhookOnlyActivityTypes(events) // The generated source remains stable once docs catch up.
 
 	want := map[string][]string{
-		"merge_group": {"destroyed"},
-		"push":        {},
+		"merge_group":         {"destroyed"},
+		"push":                {},
+		"pull_request":        {"opened", "stacked"},
+		"pull_request_target": {"stacked"},
 	}
 	if diff := cmp.Diff(want, events); diff != "" {
 		t.Fatal(diff)
@@ -119,11 +125,16 @@ func TestParseError(t *testing.T) {
 }
 
 func TestFetchURL(t *testing.T) {
-	b, err := fetch("https://github.com")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "test response")
+	}))
+	defer server.Close()
+
+	b, err := fetch(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b) == 0 {
-		t.Fatal("Fetched source is empty")
+	if string(b) != "test response" {
+		t.Fatalf("fetched source is unexpected: %q", b)
 	}
 }

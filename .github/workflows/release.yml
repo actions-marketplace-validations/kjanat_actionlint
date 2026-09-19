@@ -1,0 +1,317 @@
+name: Release
+on: { push: { tags: ["v*.*.*"] } }
+
+concurrency:
+  group: actionlint-release
+  cancel-in-progress: false
+  queue: max
+
+permissions: { contents: read }
+
+jobs:
+  nix:
+    uses: $/.github/workflows/nix.yml
+    with: { tag: "${{ github.ref_name }}" }
+  changelog:
+    name: Check changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: &ActionsCheckout actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: &NoCreds { persist-credentials: false }
+      - name: Check pinned go-shellcheck version
+        uses: $/.github/actions/shellcheck-versions
+        with: { fail-on-outdated: true }
+      - uses: &SetupGo actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: &GoMod { go-version-file: go.mod }
+      - name: Resolve release notes
+        env: { TAG: "${{ github.ref_name }}" }
+        run: go run ./scripts/bump-version -notes "${TAG}" > "${RUNNER_TEMP}/release-notes.md"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with: { name: release-notes, path: "${{ runner.temp }}/release-notes.md", if-no-files-found: error }
+  manual:
+    name: Build command manual
+    runs-on: ubuntu-latest
+    steps:
+      - uses: *ActionsCheckout
+        with: *NoCreds
+      - uses: $/.github/actions/setup-pandoc
+      - uses: kjanat/runner@8baa9ee978cfed038b98741749673c788ff161d1 # v0.26.2
+      - run: run make:man/actionlint.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with: { name: manual, path: man/actionlint.1, if-no-files-found: error }
+  binaries:
+    runs-on: ubuntu-latest
+    needs: [changelog, manual, nix]
+    permissions: { contents: write, id-token: write, attestations: write }
+    steps:
+      - uses: *ActionsCheckout
+        with: { fetch-depth: 0, persist-credentials: false }
+      - parallel:
+          - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+            with: { name: manual, path: man }
+          - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+            with: { name: release-notes, path: "${{ runner.temp }}" }
+          - uses: *SetupGo
+            with: *GoMod
+      - name: Get version
+        run: echo VERSION="${GITHUB_REF#refs/tags/v}" >> "${GITHUB_ENV}"
+      - name: Install syft for SBOM generation
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with: { version: v2.18.0, args: "release --clean --release-notes=${{ runner.temp }}/release-notes.md" }
+        env: {
+          GITHUB_TOKEN: "${{ github.token }}",
+          HOMEBREW_TAP_TOKEN: "${{ secrets.HOMEBREW_TAP_TOKEN }}",
+          SCOOP_BUCKET_TOKEN: "${{ secrets.SCOOP_BUCKET_TOKEN }}",
+          WINGET_TOKEN: "${{ secrets.WINGET_TOKEN }}",
+          AUR_SSH_PRIVATE_KEY: "${{ secrets.AUR_SSH_PRIVATE_KEY }}",
+          COMMIT_USER: "${{ vars.COMMIT_USER }}",
+          COMMIT_EMAIL: "${{ vars.COMMIT_EMAIL }}",
+        }
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with: { subject-checksums: "./dist/actionlint_${{ env.VERSION }}_checksums.txt" }
+      - name: Post-release download check
+        run: bash ./scripts/download-actionlint.bash
+  npm:
+    needs: binaries
+    permissions: { contents: read, id-token: write }
+    uses: $/.github/workflows/npm-release.yml
+    with: { tag: "${{ github.ref_name }}" }
+  docker:
+    runs-on: ubuntu-latest
+    needs: [changelog, nix]
+    outputs: {
+      is-latest: "${{ steps.tag.outputs.is-latest }}",
+      is-major-latest: "${{ steps.tag.outputs.is-major-latest }}",
+      is-minor-latest: "${{ steps.tag.outputs.is-minor-latest }}",
+      action-digest: "${{ steps.push-action.outputs.digest }}",
+    }
+    permissions: { contents: read, packages: write, id-token: write, attestations: write }
+    steps:
+      - uses: *ActionsCheckout
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: Get tag name
+        id: tag
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          version="${GITHUB_REF_NAME#v}"
+          major="${version%%.*}"
+          minor="${version%.*}"
+          {
+            echo "name=${version}"
+            echo "major=${major}"
+            echo "minor=${minor}"
+          } >> "${GITHUB_OUTPUT}"
+
+          latest_stable_tag() {
+            local pattern="$1"
+            local candidate tags
+            tags="$(git tag --list "${pattern}" --sort=-version:refname)"
+            while IFS= read -r candidate; do
+              if [[ "${candidate}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "${candidate}"
+                return
+              fi
+            done <<< "${tags}"
+          }
+
+          latest="$(latest_stable_tag 'v*.*.*')"
+          major_latest="$(latest_stable_tag "v${major}.*.*")"
+          if [[ "${GITHUB_REF_NAME}" == "${latest}" ]]; then
+            echo "is-latest=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "is-latest=false" >> "${GITHUB_OUTPUT}"
+          fi
+          if [[ "${GITHUB_REF_NAME}" == "${major_latest}" ]]; then
+            echo "is-major-latest=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "is-major-latest=false" >> "${GITHUB_OUTPUT}"
+          fi
+          minor_latest="$(latest_stable_tag "v${minor}.*")"
+          if [[ "${GITHUB_REF_NAME}" == "${minor_latest}" ]]; then
+            echo "is-minor-latest=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "is-minor-latest=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - parallel:
+          - name: Login to GitHub Container Registry
+            uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+            with: { registry: ghcr.io, username: "${{ github.repository_owner }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+          - name: Login to Docker Hub
+            uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+            with: { username: "${{ github.repository_owner }}", password: "${{ secrets.DOCKERHUB_TOKEN }}", scope: "${{ github.repository }}@push" }
+      - name: Tags for the CLI image
+        id: meta-cli
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+            docker.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.tag.outputs.name }}
+            type=raw,value=${{ steps.tag.outputs.minor }},enable=${{ steps.tag.outputs.is-minor-latest }}
+            type=raw,value=${{ steps.tag.outputs.major }},enable=${{ steps.tag.outputs.is-major-latest }}
+            type=raw,value=latest,enable=${{ steps.tag.outputs.is-latest }}
+        env: { DOCKER_METADATA_ANNOTATIONS_LEVELS: "manifest,index" }
+      - name: Build CLI image for the smoke test
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          target: cli
+          build-args: |
+            ACTIONLINT_VER=${{ steps.tag.outputs.name }}
+          load: true
+          cache-from: type=gha,scope=release-cli
+          cache-to: type=gha,scope=release-cli,mode=max
+          tags: actionlint:smoke
+      - name: Smoke-test the CLI image
+        run: docker run --rm --mount type=bind,source="${PWD}",target=/w -- actionlint:smoke -color -verbose
+      - name: Build and push CLI image
+        id: push-cli
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          platforms: linux/amd64,linux/arm64
+          target: cli
+          build-args: |
+            ACTIONLINT_VER=${{ steps.tag.outputs.name }}
+          push: true
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=release-cli
+          cache-to: type=gha,scope=release-cli,mode=max
+          labels: ${{ steps.meta-cli.outputs.labels }}
+          annotations: ${{ steps.meta-cli.outputs.annotations }}
+          tags: ${{ steps.meta-cli.outputs.tags }}
+      - parallel:
+          - name: Update Docker Hub description
+            uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+            with:
+              username: ${{ github.repository_owner }}
+              password: ${{ secrets.DOCKERHUB_TOKEN }}
+              repository: ${{ github.repository }}
+              short-description: ${{ github.event.repository.description }}
+              enable-url-completion: true
+          - name: Tags for the GitHub Action image
+            id: meta-action
+            uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+            with:
+              images: ghcr.io/${{ github.repository }}
+              tags: |
+                type=raw,value=action-${{ steps.tag.outputs.name }}
+                type=raw,value=action-v${{ steps.tag.outputs.minor }},enable=${{ steps.tag.outputs.is-minor-latest }}
+                type=raw,value=action-v${{ steps.tag.outputs.major }},enable=${{ steps.tag.outputs.is-major-latest }}
+                type=raw,value=action-latest,enable=${{ steps.tag.outputs.is-latest }}
+            env: { DOCKER_METADATA_ANNOTATIONS_LEVELS: "manifest,index" }
+      - name: Build GitHub Action image for the smoke test
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          target: action
+          build-args: |
+            ACTIONLINT_VER=${{ steps.tag.outputs.name }}
+          load: true
+          cache-from: type=gha,scope=release-action
+          cache-to: type=gha,scope=release-action,mode=max
+          tags: actionlint-action:smoke
+      - name: Smoke-test the GitHub Action image
+        run: ./scripts/test-action.bash actionlint-action:smoke
+      - name: Build and push GitHub Action image
+        id: push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          platforms: linux/amd64,linux/arm64
+          target: action
+          build-args: |
+            ACTIONLINT_VER=${{ steps.tag.outputs.name }}
+          push: true
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=release-action
+          cache-to: type=gha,scope=release-action,mode=max
+          labels: ${{ steps.meta-action.outputs.labels }}
+          annotations: ${{ steps.meta-action.outputs.annotations }}
+          tags: ${{ steps.meta-action.outputs.tags }}
+      - parallel:
+          - name: Attest the CLI image
+            uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+            with:
+              subject-name: ghcr.io/${{ github.repository }}
+              subject-digest: ${{ steps.push-cli.outputs.digest }}
+              push-to-registry: true
+          - name: Attest the CLI image on Docker Hub
+            uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+            with:
+              subject-name: docker.io/${{ github.repository }}
+              subject-digest: ${{ steps.push-cli.outputs.digest }}
+          - name: Attest the GitHub Action image
+            uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+            with:
+              subject-name: ghcr.io/${{ github.repository }}
+              subject-digest: ${{ steps.push-action.outputs.digest }}
+              push-to-registry: true
+  floating-tags:
+    name: Update floating action tags
+    needs: [binaries, docker]
+    if: needs.docker.outputs.is-major-latest == 'true' || needs.docker.outputs.is-minor-latest == 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: *ActionsCheckout
+        with: { fetch-depth: 0 }
+      - name: Verify release commit signature
+        env: { GH_TOKEN: "${{ github.token }}", COMMIT_API: "${{ format('repos/{0}/commits/{1}', github.repository, github.sha) }}" }
+        run: |
+          verified="$(gh api "${COMMIT_API}" --jq '.commit.verification.verified')"
+          test "${verified}" = true
+      # The image does not exist yet when the release commit is made, so the digest can only be
+      # pinned afterwards. The pinned commit is reachable through floating tags alone and never
+      # lands on the default branch, where a stale digest would survive the next version bump.
+      - name: Pin the action image to the digest it was published as
+        shell: bash
+        env: { DIGEST: "${{ needs.docker.outputs.action-digest }}" }
+        run: |
+          set -euo pipefail
+          case "${DIGEST}" in
+          sha256:*) ;;
+          *)
+            echo "::error::the docker job reported no digest for the action image"
+            exit 1
+            ;;
+          esac
+          version="${GITHUB_REF_NAME#v}"
+          tagged="ghcr.io/${GITHUB_REPOSITORY}:action-${version}"
+          tagged_lines="$(grep -c "^  image: docker://${tagged}\$" action.yml)"
+          test "${tagged_lines}" -eq 1
+          sed -i "s|^  image: docker://.*\$|  image: docker://${tagged}@${DIGEST}|" action.yml
+          git --no-pager diff -- action.yml
+      - name: Commit the pin
+        shell: bash
+        env: { GIT_AUTHOR_NAME: "github-actions[bot]", GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com" }
+        run: |
+          set -euo pipefail
+          export GIT_COMMITTER_NAME="${GIT_AUTHOR_NAME}" GIT_COMMITTER_EMAIL="${GIT_AUTHOR_EMAIL}"
+          git add action.yml
+          git commit --no-gpg-sign --message "pin the action image of ${GITHUB_REF_NAME} to its digest"
+      - name: Move floating tags to the pinned commit
+        shell: bash
+        env: {
+          MOVE_MAJOR: "${{ needs.docker.outputs.is-major-latest }}",
+          MOVE_MINOR: "${{ needs.docker.outputs.is-minor-latest }}",
+        }
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          major="v${version%%.*}"
+          minor="v${version%.*}"
+          refs=()
+          if [[ "${MOVE_MAJOR}" == true ]]; then
+            refs+=("HEAD:refs/tags/${major}")
+          fi
+          if [[ "${MOVE_MINOR}" == true ]]; then
+            refs+=("HEAD:refs/tags/${minor}")
+          fi
+          git push --atomic --force origin "${refs[@]}"

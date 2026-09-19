@@ -378,7 +378,15 @@ func TestConfigGenerateDefaultConfigFileOK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "#policy:\n#  # Require every \"uses:\" to be pinned to a full commit SHA or an image\n#  # digest.\n#  require-commit-hash: true\n"
+	const schemaHeader = "# yaml-language-server: $schema=https://raw.githubusercontent.com/kjanat/actionlint/HEAD/actionlint.schema.json\n---\n"
+	if !strings.HasPrefix(string(b), schemaHeader) {
+		t.Fatalf("generated config must start with the YAML Language Server schema directive, got %q", string(b))
+	}
+	want := "#policy:\n#  cache-call-unrestricted: true\n#  cache-operation: true\n#  cache-write-untrusted: true\n#  disallow-suppressions: false\n"
+	if !strings.Contains(string(b), want) {
+		t.Fatalf("wanted generated config file %q to contain %q", string(b), want)
+	}
+	want = "#  # Require every \"uses:\" to be pinned to a full commit SHA or an image\n#  # digest.\n#  require-commit-hash: true\n"
 	if !strings.Contains(string(b), want) {
 		t.Fatalf("wanted generated config file %q to contain %q", string(b), want)
 	}
@@ -386,9 +394,12 @@ func TestConfigGenerateDefaultConfigFileOK(t *testing.T) {
 	if !strings.Contains(string(b), want) {
 		t.Fatalf("wanted generated config file %q to contain %q", string(b), want)
 	}
-	want = "#  # Require \"timeout-minutes\" on every job. A mapping with \"max-minutes\" also\n#  # caps the value.\n#  require-job-timeout: true\n"
+	want = "#  # Require \"timeout-minutes\" on every job. A mapping with \"min-minutes\" and\n#  # \"max-minutes\" also sets inclusive bounds.\n#  require-job-timeout: true\n"
 	if !strings.Contains(string(b), want) {
 		t.Fatalf("wanted generated config file %q to contain %q", string(b), want)
+	}
+	if !strings.Contains(string(b), "#  require-permissions: true\n") {
+		t.Fatal("generated config omits the permissions policy")
 	}
 }
 

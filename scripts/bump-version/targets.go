@@ -35,6 +35,12 @@ const goShellcheckDependency = "github.com/wasilibs/go-shellcheck/cmd/shellcheck
 
 var targets = []*target{
 	{
+		path: "flake.nix",
+		rules: []rule{
+			mustRule("Nix package version", `(?m)^      version = "(\d+\.\d+\.\d+)";\r?$`, 1),
+		},
+	},
+	{
 		path: ".pre-commit-hooks.yaml",
 		rules: []rule{
 			mustRule("pre-commit Docker image tag", `(?m)^  entry: ghcr\.io/kjanat/actionlint:(\d+\.\d+\.\d+)\r?$`, 1),
@@ -83,13 +89,17 @@ var targets = []*target{
 			mustRule("download script example description", `example installs v(\d+\.\d+\.\d+)`, 1),
 			mustRule("download script argument", `download-actionlint\.bash\) (\d+\.\d+\.\d+)`, 1),
 		},
-		unrelated: []string{"actionlint v1.7.11"},
+		unrelated: []string{
+			"has proposed switching the package to this fork at v1.16.0",
+			"mise 2026.9.7 release PR",
+			"On mise 2026.9.6,",
+		},
 	},
 	{
 		path: "README.md",
 		rules: []rule{
 			mustRule("versioned release tag note", "`v(\\d+\\.\\d+\\.\\d+)` is a versioned release tag", 1),
-			mustRule("document link", `/blob/v(\d+\.\d+\.\d+)/docs/`, 6),
+			mustRule("document link", `/blob/v(\d+\.\d+\.\d+)/docs/`, 4),
 			mustRule("pre-commit revision", `(?m)^    rev: v(\d+\.\d+\.\d+)\r?$`, 1),
 		},
 		generated: []*regexp.Regexp{
@@ -100,15 +110,28 @@ var targets = []*target{
 		path: "man/actionlint.1.md",
 		rules: []rule{
 			mustRule("manual footer version", `(?m)^footer: actionlint (\d+\.\d+\.\d+)\r?$`, 1),
-			mustRule("document link", `/blob/v(\d+\.\d+\.\d+)/docs/`, 6),
+			mustRule("document link", `/blob/v(\d+\.\d+\.\d+)/docs/`, 5),
 		},
 	},
 	{
-		path: "playground/index.html",
+		path: ".github/workflows/npm-release.yml",
 		rules: []rule{
-			mustRule("release page link", `releases/tag/v(\d+\.\d+\.\d+)`, 1),
-			mustRule("version badge", `id="version">v(\d+\.\d+\.\d+)`, 1),
-			mustRule("document link", `/blob/v(\d+\.\d+\.\d+)/docs/`, 1),
+			mustRule("npm workflow release tag example", `Release tag to publish \(e\.g\. v(\d+\.\d+\.\d+)\)`, 1),
+		},
+	},
+	{
+		path: "distribution/npm/README.md",
+		rules: []rule{
+			mustRule("npm package build version", `INPUT_VERSION=(\d+\.\d+\.\d+)`, 1),
+		},
+		unrelated: []string{"0.0.0"}, // The unpublished workspace template, not a release version.
+	},
+	{
+		path: "distribution/aur/actionlint-kjanat-git/PKGBUILD",
+		rules: []rule{
+			mustRule("AUR git package base version", `(?m)^pkgver=(\d+\.\d+\.\d+)\.r0\.g0000000\r?$`, 1),
+			mustRule("AUR git describe example", `# v(\d+\.\d+\.\d+)-12-gabc1234`, 1),
+			mustRule("AUR pkgver example", `-> (\d+\.\d+\.\d+)\.r12\.gabc1234`, 1),
 		},
 	},
 }

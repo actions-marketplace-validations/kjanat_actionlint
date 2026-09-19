@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -325,6 +326,19 @@ func TestCheckReportsEveryReference(t *testing.T) {
 	}
 }
 
+func TestCheckRejectsInconsistentVersions(t *testing.T) {
+	root := copyFixture(t)
+	path := filepath.Join(root, "download.bash")
+	content := bytes.ReplaceAll(readFixture(t, "repo", "download.bash"), []byte("1.2.0"), []byte("1.3.0"))
+	if err := os.WriteFile(path, content, 0666); err != nil {
+		t.Fatal(err)
+	}
+	err := Check(root, fixtureTargets(), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "release version references are inconsistent: 1.2.0, 1.3.0") {
+		t.Fatalf("expected mismatched release versions to fail validation, got %v", err)
+	}
+}
+
 func TestDeclaredTargetsAreWellFormed(t *testing.T) {
 	seen := map[string]bool{}
 	for _, tgt := range targets {
@@ -464,6 +478,87 @@ func TestPreflightRejectsRemoteOnlyTag(t *testing.T) {
 	}
 	if want := "already exists on origin"; !strings.Contains(err.Error(), want) {
 		t.Errorf("error %q does not mention %q", err, want)
+	}
+}
+
+func TestNixFailureProcess(t *testing.T) {
+	if os.Getenv("ACTIONLINT_TEST_NIX_FAILURE") != "1" {
+		return
+	}
+	if got := strings.Join(os.Args[len(os.Args)-4:], " "); got != "flake check --no-update-lock-file --print-build-logs" {
+		fmt.Fprintln(os.Stderr, "unexpected Nix arguments:", got)
+		os.Exit(2)
+	}
+	if err := Check(".", targets, io.Discard); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	content, err := os.ReadFile("flake.nix")
+	if err != nil || !bytes.Contains(content, []byte(`version = "9.9.9";`)) {
+		fmt.Fprintln(os.Stderr, "the Nix check did not receive the bumped source")
+		os.Exit(2)
+	}
+	fmt.Fprintln(os.Stderr, "simulated Nix build failure")
+	os.Exit(7)
+}
+
+func TestReleaseStopsBeforeCommitAndTagWhenNixFails(t *testing.T) {
+	r := gitRepo(t)
+	for _, name := range paths(targets) {
+		content, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(r.root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changelog := `# Unreleased
+
+- Test release notes.
+
+<a id="v9.9.8"></a>
+## [v9.9.8](https://github.com/kjanat/actionlint/releases/tag/v9.9.8) - 2026-01-01
+
+- Previous release.
+
+[Changes][v9.9.8]
+
+[v9.9.8]: https://github.com/kjanat/actionlint/compare/v9.9.7...v9.9.8
+`
+	if err := os.WriteFile(filepath.Join(r.root, changelogFile), []byte(changelog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run("add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run("commit", "-m", "release inputs"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := r.git("rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ACTIONLINT_TEST_NIX_FAILURE", "1")
+	command := fmt.Sprintf("'%s' -test.run=^TestNixFailureProcess$ --", exe)
+	var stderr bytes.Buffer
+	err = Main(t.Context(), []string{"bump-version", "-root", r.root, "-nix-command", command, "-commit", "9.9.9"}, io.Discard, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "nix flake check failed") || !strings.Contains(stderr.String(), "simulated Nix build failure") {
+		t.Fatalf("expected the Nix build failure to stop the release, got %v; stderr: %s", err, &stderr)
+	}
+	if after, err := r.git("rev-parse", "HEAD"); err != nil || after != before {
+		t.Fatalf("the failed check changed HEAD: %q -> %q, %v", before, after, err)
+	}
+	if tag, err := r.git("tag", "--list", "v9.9.9"); err != nil || tag != "" {
+		t.Fatalf("the failed check created a release tag: %q, %v", tag, err)
 	}
 }
 

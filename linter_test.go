@@ -270,14 +270,12 @@ CheckFiles:
 }
 
 func TestLintFindProjectFromPath(t *testing.T) {
-	d := filepath.Join("testdata", "find_project")
+	d := testProjectDir(t, filepath.Join("testdata", "find_project"))
 	f := filepath.Join(d, ".github", "workflows", "test.yaml")
 	b, err := os.ReadFile(f)
 	if err != nil {
 		panic(err)
 	}
-
-	testEnsureDotGitDir(d)
 
 	lint := func(path string) []*Error {
 		l, err := NewLinter(io.Discard, &LinterOptions{})
@@ -413,6 +411,12 @@ func TestLinterFormatErrorMessageOK(t *testing.T) {
 }
 
 func TestLinterFormatErrorMessageInSARIF(t *testing.T) {
+	saved := version
+	t.Cleanup(func() {
+		version = saved
+	})
+	version = "(devel)"
+
 	dir := filepath.Join("testdata", "format")
 	proj := &Project{root: dir}
 	file := filepath.Join(dir, "test.yaml")
@@ -671,8 +675,7 @@ func TestLinterGenerateDefaultConfigAlreadyExists(t *testing.T) {
 	}
 
 	for _, n := range []string{"ok", "yml"} {
-		d := filepath.Join("testdata", "config", "projects", n)
-		testEnsureDotGitDir(d)
+		d := testProjectDir(t, filepath.Join("testdata", "config", "projects", n))
 
 		err := l.GenerateDefaultConfig(d)
 		if err == nil {

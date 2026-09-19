@@ -605,8 +605,16 @@ func (l *Linter) check(
 		if p := cfg.RequiresJobTimeout(); p.Enabled() {
 			rules = append(rules, NewRuleRequireJobTimeout(p))
 		}
+		if p := cfg.RequiresPermissions(); p.Enabled() {
+			rules = append(rules, NewRuleRequirePermissions(p))
+		}
 		if len(cfg.RequiredActions()) > 0 {
 			rules = append(rules, NewRuleRequiredActions())
+		}
+		for _, rule := range []Rule{NewRuleCacheWriteUntrusted(), NewRuleCacheCallUnrestricted(), newRuleCacheOperation(localReusableWorkflows)} {
+			if cfg.cachePolicyEnabled(rule.Name()) {
+				rules = append(rules, rule)
+			}
 		}
 		if l.shellcheck != "" {
 			r, err := NewRuleShellcheck(l.shellcheck, proc)
@@ -666,6 +674,11 @@ func (l *Linter) check(
 		}
 	}
 
+	var suppressionPolicy *SuppressionsPolicy
+	if cfg != nil {
+		suppressionPolicy = cfg.Policy.DisallowSuppressions
+	}
+	all = filterInlineSuppressions(content, all, suppressionPolicy)
 	all = l.filterErrors(all, cfg.PathConfigs(path))
 
 	for _, err := range all {

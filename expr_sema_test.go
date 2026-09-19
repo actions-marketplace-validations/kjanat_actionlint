@@ -99,6 +99,21 @@ func TestExprSemanticsCheckOK(t *testing.T) {
 			expected: StringType{},
 		},
 		{
+			what:     "github context artifacts property",
+			input:    "github.artifacts",
+			expected: StringType{},
+		},
+		{
+			what:     "github context artifacts_list property",
+			input:    "github.artifacts_list",
+			expected: StringType{},
+		},
+		{
+			what:     "github context retention_days property",
+			input:    "github.retention_days",
+			expected: StringType{},
+		},
+		{
 			what:     "object property dereference for any type",
 			input:    "github.event.labels",
 			expected: AnyType{},
@@ -1153,10 +1168,10 @@ func TestExprSemanticsCheckError(t *testing.T) {
 			},
 		},
 		{
-			what:  "zero format arguments for format() call",
-			input: "format('hi')",
+			what:  "missing argument for format() placeholder",
+			input: "format('{0}')",
 			expected: []string{
-				"takes at least 2 parameters but 1 arguments are given",
+				"contains placeholder {0} but only 0 arguments are given",
 			},
 		},
 		{

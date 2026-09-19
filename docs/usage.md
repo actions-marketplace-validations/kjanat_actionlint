@@ -1,5 +1,7 @@
 # Usage
 
+[![GitHub Release][release-badge]][releases]
+
 This document describes how to use [actionlint](../README.md).
 
 ## `actionlint` command
@@ -71,6 +73,13 @@ actionlint -completion powershell | Out-String | Invoke-Expression
 
 ### Ignore some errors
 
+The three cache policies support [inline exceptions](config.md#inline-cache-policy-exceptions) with a rule name and
+a reason. Place the comment on the reported line, or use `actionlint:ignore-next-line` immediately before it:
+
+```yaml
+cache-mode: write # actionlint:ignore cache-write-untrusted -- this job runs reviewed default-branch code only
+```
+
 To ignore some errors, `-ignore` option offers to filter errors by messages
 using regular expression. The option is repeatable. The regular expression
 syntax is the same as [RE2][re2].
@@ -138,12 +147,12 @@ actionlint -format '
 
 Output:
 
+<!-- dprint-ignore-start -->
+
 ````markdown
 ### Error at line 21, col 20 of `test.yaml`
 
 property "platform" is not defined in object type {os: string}
-
-<!-- dprint-ignore-start -->
 
 ```plaintext
           key: ${{ matrix.platform }}-node-${{ hashFiles('**/package-lock.json') }}
@@ -178,7 +187,7 @@ actionlint -format '
 
 Output:
 
-<img src="https://github.com/rhysd/ss/blob/master/actionlint/ga-annotate.png?raw=true" alt="annotations on GitHub Actions" width="731" height="522"/>
+<img src="https://cdn.jsdelivr.net/gh/rhysd/ss@5530c2526b44ad28dc12f91a3d71bcd57940f008/actionlint/ga-annotate.png" alt="annotations on GitHub Actions" width="731" height="522"/>
 
 To include newlines in the annotation body, it prints `%0A`. (ref
 [actions/toolkit#193](https://github.com/actions/toolkit/issues/193)). And it
@@ -217,7 +226,7 @@ The error object has the following fields.
 | `{{$err.Message}}`   | Body of error message                                 | `property "platform" is not defined in object type {os: string}`    |
 | `{{$err.Snippet}}`   | Code snippet to indicate error position               |  <code>          node_version: 16.x\n          ^~~~~~~~~~~~~</code> |
 | `{{$err.Kind}}`      | Name of rule the error belongs to                     | `expression`                                                        |
-| `{{$err.Filepath}}`  | Canonical relative file path of the error position    | `.github/workflows/ci.yaml`                                         |
+| `{{$err.Filepath}}`  | Canonical relative file path of the error position    | `.github/workflows/ci.yml`                                         |
 | `{{$err.Line}}`      | Line number of the error position (1-based)           | `9`                                                                 |
 | `{{$err.Column}}`    | Column number of the error's start position (1-based) | `11`                                                                |
 | `{{$err.EndColumn}}` | Column number of the error's end position (1-based)   | `23`                                                                |
@@ -325,9 +334,12 @@ there because it has the same Docker daemon requirement.
 ```
 
 The binary-only path does not bundle ShellCheck or pyflakes; install them on the
-runner when those integrations are required. `v1` moves to each new release.
-`v1.13.0` is a versioned release tag, but only a full-length commit SHA provides
-an immutable action reference.
+runner when those integrations are required.
+
+`v1` follows compatible v1 releases, and `v1.16` follows v1.16 patch releases. Each points to a commit immediately
+after the release that pins the published container image by digest. `v1.17.0` is a versioned release tag.
+For an immutable action reference with a pinned image, use the full commit SHA resolved from a
+floating tag.
 
 The action accepts these inputs:
 
@@ -354,8 +366,8 @@ found:
   uses: kjanat/actionlint@v1
   with:
     files: |
-      .github/workflows/ci.yaml
-      .github/workflows/release.yaml
+      .github/workflows/ci.yml
+      .github/workflows/release.yml
     format: json-lines
     output-file: actionlint-results.jsonl
     fail-on-error: false
@@ -383,11 +395,11 @@ jobs:
   actionlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - name: Download actionlint
         id: get_actionlint
-        run: bash <(curl -fsSL https://raw.githubusercontent.com/kjanat/actionlint/HEAD/scripts/download-actionlint.bash) 1.13.0
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/kjanat/actionlint/662318dd6bbd9c0c120e35b03168bc1be69bf428/scripts/download-actionlint.bash) 1.17.0
         shell: bash
       - name: Check workflow files
         run: ${{ steps.get_actionlint.outputs.executable }} -color
@@ -399,7 +411,7 @@ Or simply download the executable and run it in one step:
 ```yaml
 - name: Check workflow files
   run: |
-    bash <(curl -fsSL https://raw.githubusercontent.com/kjanat/actionlint/HEAD/scripts/download-actionlint.bash) 1.13.0
+    bash <(curl -fsSL https://raw.githubusercontent.com/kjanat/actionlint/662318dd6bbd9c0c120e35b03168bc1be69bf428/scripts/download-actionlint.bash) 1.17.0
     ./actionlint -color
   shell: bash
 ```
@@ -426,7 +438,7 @@ jobs:
   actionlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - name: Check workflow files
         uses: docker://ghcr.io/kjanat/actionlint:latest
@@ -450,6 +462,8 @@ results table moves a cursor to position of the error in the code editor.
 
 ## [Docker][docker] image
 
+[![Docker Image Version][docker-badge]][dockerhub]
+
 [Docker image][docker-image] is available. The image contains `actionlint`
 executable and all dependencies (shellcheck and pyflakes).
 
@@ -459,10 +473,10 @@ Available tags are:
   Moving alias for the latest stable version of actionlint. This image is recommended.
 - `ghcr.io/kjanat/actionlint:{version}`:\
   Release-specific actionlint image rather than a moving alias.\
-  (e.g. `ghcr.io/kjanat/actionlint:1.13.0`)
+  (e.g. `ghcr.io/kjanat/actionlint:1.17.0`)
 - `ghcr.io/kjanat/actionlint:action-{version}`:\
   Release-specific image used by `action.yml` rather than a moving alias.\
-  (e.g. `action-1.13.0`)
+  (e.g. `action-1.17.0`)
 - `ghcr.io/kjanat/actionlint:action-v1`:\
   Moving alias for the latest compatible v1 image available to Docker Action users.
 - `ghcr.io/kjanat/actionlint:action-latest`:\
@@ -544,7 +558,7 @@ jobs:
   actionlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - uses: reviewdog/action-actionlint@v1
 ```
@@ -570,7 +584,7 @@ in the step of your workflow.
 - name: Check workflow files
   run: |
     echo "::add-matcher::.github/actionlint-matcher.json"
-    bash <(curl -fsSL https://raw.githubusercontent.com/kjanat/actionlint/HEAD/scripts/download-actionlint.bash) 1.13.0
+    bash <(curl -fsSL https://raw.githubusercontent.com/kjanat/actionlint/662318dd6bbd9c0c120e35b03168bc1be69bf428/scripts/download-actionlint.bash) 1.17.0
     ./actionlint -color
   shell: bash
 ```
@@ -579,7 +593,7 @@ When you change your workflow and the changed line causes a new error, CI will
 annotate the diff with the extracted error message.
 
 <img
-  src="https://github.com/rhysd/ss/blob/master/actionlint/problem-matcher.png?raw=true"
+  src="https://cdn.jsdelivr.net/gh/rhysd/ss@5530c2526b44ad28dc12f91a3d71bcd57940f008/actionlint/problem-matcher.png"
   alt="annotation by Problem Matchers"
   width="715"
   height="221"
@@ -620,7 +634,7 @@ Add this to your `.pre-commit-config.yaml` in your repository:
 ---
 repos:
   - repo: https://github.com/kjanat/actionlint
-    rev: v1.13.0
+    rev: v1.17.0
     hooks:
       - id: actionlint
 ```
@@ -639,7 +653,7 @@ The `actionlint` hook installs into an isolated `$GOPATH`, so it only finds a
 `shellcheck` executable that is already on `PATH`.
 
 `actionlint-shellcheck` pins go-shellcheck so each actionlint revision builds a
-reproducible pre-commit environment. A scheduled [version lifecycle workflow](../.github/workflows/shellcheck-versions.yaml) checks both go-shellcheck
+reproducible pre-commit environment. The scheduled [Upkeep workflow](../.github/workflows/upkeep.yml) checks both go-shellcheck
 and the ShellCheck version it embeds, and proposes pin updates automatically.
 To choose a different version yourself, use `additional_dependencies` on the
 plain hook:
@@ -648,7 +662,7 @@ plain hook:
 ---
 repos:
   - repo: https://github.com/kjanat/actionlint
-    rev: v1.13.0
+    rev: v1.17.0
     hooks:
       - id: actionlint
         additional_dependencies:
@@ -743,7 +757,7 @@ trunk check enable actionlint
 or if you'd like a specific version:
 
 ```bash
-trunk check enable actionlint@1.13.0
+trunk check enable actionlint@1.17.0
 ```
 
 or modify `.trunk/trunk.yaml` in your repository to contain:
@@ -751,7 +765,7 @@ or modify `.trunk/trunk.yaml` in your repository to contain:
 ```yaml
 lint:
   enabled:
-    - actionlint@1.13.0
+    - actionlint@1.17.0
 ```
 
 Then just run:
@@ -773,6 +787,8 @@ You can also see actionlint issues inline in VS Code via the [Trunk VS Code exte
 
 [actionlint-matcher]: https://raw.githubusercontent.com/kjanat/actionlint/HEAD/.github/actionlint-matcher.json
 [cmd-manual]: https://kjanat.github.io/actionlint/usage.html
+[docker-badge]: https://img.shields.io/docker/v/kjanat/actionlint
+[dockerhub]: https://hub.docker.com/r/kjanat/actionlint
 [docker-image]: https://github.com/kjanat/actionlint/pkgs/container/actionlint
 [docker]: https://www.docker.com/
 [emacs-flycheck-extension]: https://github.com/tirimia/flycheck-actionlint
@@ -794,6 +810,8 @@ You can also see actionlint issues inline in VS Code via the [Trunk VS Code exte
 [pulsar-linter]: https://web.pulsar-edit.dev/packages/linter-github-actions
 [pulsar]: https://pulsar-edit.dev/
 [re2]: https://golang.org/s/re2syntax
+[release-badge]: https://img.shields.io/github/v/release/kjanat/actionlint
+[releases]: https://github.com/kjanat/actionlint/releases
 [reviewdog-actionlint]: https://github.com/reviewdog/action-actionlint
 [reviewdog]: https://github.com/reviewdog/reviewdog
 [sarif]: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html

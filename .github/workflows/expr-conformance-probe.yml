@@ -1,0 +1,61 @@
+name: Expression conformance probe
+on:
+  workflow_dispatch:
+    inputs:
+      group:
+        description: Corpus to measure (all takes several minutes)
+        type: choice
+        default: all
+        options: [all, literals, from-json, coercion, typed-inputs, decisions]
+permissions: { contents: read }
+concurrency:
+  group: expression-conformance-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    name: Measure expressions on GitHub
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version-file: .node-version }
+      - name: Capture parser verdicts and runner values
+        env:
+          GH_TOKEN: ${{ secrets.EXPR_PROBE_TOKEN }}
+          PROBE_GROUP: ${{ inputs.group }}
+        shell: bash
+        run: |
+          if [[ -z "${GH_TOKEN}" ]]; then
+            echo '::error::Set EXPR_PROBE_TOKEN with Contents, Workflows and Actions write access to this repository. See docs/expression-behavior.md.'
+            exit 1
+          fi
+          args=(run --repo "${GITHUB_REPOSITORY}" --output ".cache/expression-probe/${GITHUB_RUN_ID}")
+          if [[ "${PROBE_GROUP}" != all ]]; then args+=(--group "${PROBE_GROUP}"); fi
+          node scripts/expression-probe/probe.ts "${args[@]}"
+      - name: Finish cleanup after interruption
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.EXPR_PROBE_TOKEN }}
+        shell: bash
+        run: |
+          output=".cache/expression-probe/${GITHUB_RUN_ID}"
+          if [[ -f "${output}/refs.json" ]]; then
+            node scripts/expression-probe/probe.ts cleanup --output "${output}"
+          fi
+      - name: Publish measurement summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          report=".cache/expression-probe/${GITHUB_RUN_ID}/summary.md"
+          if [[ -f "${report}" ]]; then cat "${report}" >> "${GITHUB_STEP_SUMMARY}"; fi
+      - name: Preserve complete evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: expression-evidence-${{ github.run_id }}
+          path: .cache/expression-probe/${{ github.run_id }}/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 90

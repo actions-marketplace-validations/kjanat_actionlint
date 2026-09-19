@@ -1,12 +1,156 @@
 package actionlint
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.yaml.in/yaml/v4"
 )
+
+func TestParseYAMLIntegerRadixBounds(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  int
+	}{
+		{"0x0", 0},
+		{"0x7fffffff", 2147483647},
+		{"0x80000000", -2147483648},
+		{"0xffffffff", -1},
+		{"0o0", 0},
+		{"0o17777777777", 2147483647},
+		{"0o20000000000", -2147483648},
+		{"0o37777777777", -1},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			got, err := parseYAMLInteger(tc.value)
+			if err != nil || got != tc.want {
+				t.Fatalf("got (%d, %v), want (%d, nil)", got, err, tc.want)
+			}
+		})
+	}
+	for _, value := range []string{"0x100000000", "0o40000000000", "0x", "0o8"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := parseYAMLInteger(value); err == nil {
+				t.Fatal("expected invalid or overflowing integer to fail")
+			}
+		})
+	}
+}
+
+func TestParserRejectsInvalidMappingKeys(t *testing.T) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte("!!int first: {nested: !!bool nope}\n!!bool second: value\n'': empty\nvalid: kept\nVALID: duplicate\n"), &doc); err != nil {
+		t.Fatal(err)
+	}
+	p := &parser{}
+	var keys []string
+	for e := range p.parseSectionMapping("test", doc.Content[0], false, false) {
+		keys = append(keys, e.id)
+	}
+	if len(keys) != 1 || keys[0] != "valid" {
+		t.Fatalf("invalid keys entered mapping: %v", keys)
+	}
+	want := []string{
+		`invalid value "first" for "!!int" tag`,
+		`invalid value "nope" for "!!bool" tag`,
+		`invalid value "second" for "!!bool" tag`,
+		`string should not be empty`,
+		`key "VALID" is duplicated`,
+	}
+	if len(p.errors) != len(want) {
+		t.Fatalf("want %d diagnostics, got %v", len(want), p.errors)
+	}
+	for i, message := range want {
+		if !strings.HasPrefix(p.errors[i].Message, message) {
+			t.Errorf("diagnostic %d: want %q, got %s", i, message, p.errors[i])
+		}
+	}
+	for _, source := range []string{"!!int invalid: value", "? [invalid]\n: value"} {
+		t.Run(source, func(t *testing.T) {
+			var doc yaml.Node
+			if err := yaml.Unmarshal([]byte(source), &doc); err != nil {
+				t.Fatal(err)
+			}
+			p := &parser{}
+			for entry := range p.parseSectionMapping("test", doc.Content[0], false, false) {
+				t.Fatalf("invalid entry retained: %v", entry)
+			}
+			if len(p.errors) != 1 || strings.Contains(p.errors[0].Message, "should not be empty") {
+				t.Fatalf("want only the invalid key diagnostic: %v", p.errors)
+			}
+		})
+	}
+}
+
+func TestParserAnchorNames(t *testing.T) {
+	for _, name := range []string{"git+opts", "git-opts", "git_opts", "opts123"} {
+		t.Run(name, func(t *testing.T) {
+			src := fmt.Sprintf("on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: &%s echo test\n      - run: *%s\n", name, name)
+			_, errs := Parse([]byte(src))
+			if name != "git+opts" {
+				if len(errs) != 0 {
+					t.Fatal(errs)
+				}
+				return
+			}
+			if len(errs) != 2 {
+				t.Fatalf("wanted anchor and alias errors, got %v", errs)
+			}
+			for i, err := range errs {
+				if err.Line != 6+i || err.Column != 14 || !strings.Contains(err.Message, `"git+opts"`) {
+					t.Fatalf("unexpected anchor diagnostic: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestParserAliasTypeLocations(t *testing.T) {
+	tests := []struct {
+		name, value, message string
+		check                func(*parser, *yaml.Node)
+	}{
+		{"string", "{}", "expected scalar node for string value", func(p *parser, n *yaml.Node) { p.parseString(n, false) }},
+		{"cache mode", "{}", "expected string for \"cache-mode\"", func(p *parser, n *yaml.Node) { p.parseCacheMode(n) }},
+		{"sequence", "{}", "must be sequence node", func(p *parser, n *yaml.Node) { p.checkSequence("steps", n, false) }},
+		{"mapping", "[]", "mapping node is expected", func(p *parser, n *yaml.Node) {
+			for range p.parseSectionMapping("env", n, false, false) {
+			}
+		}},
+		{"bool", "{}", "expected bool value", func(p *parser, n *yaml.Node) { p.parseBool(n) }},
+		{"integer", "{}", "expected scalar node for integer value", func(p *parser, n *yaml.Node) { p.parseInt(n) }},
+		{"float", "{}", "expected scalar node for float value", func(p *parser, n *yaml.Node) { p.parseFloat(n) }},
+		{"expression", "plain", "expecting a single ${{...}} expression", func(p *parser, n *yaml.Node) { p.parseBool(n) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var doc yaml.Node
+			src := "anchor: &value " + tt.value + "\nfirst: *value\nsecond: *value\n"
+			if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
+				t.Fatal(err)
+			}
+			p := &parser{}
+			p.resolveAliases(&doc)
+			for _, n := range []*yaml.Node{doc.Content[0].Content[3], doc.Content[0].Content[5]} {
+				tt.check(p, n)
+			}
+			if len(p.errors) != 2 {
+				t.Fatalf("wanted one error per alias use, got %v", p.errors)
+			}
+			for i, err := range p.errors {
+				if err.Line != i+2 || err.Column != i+8 {
+					t.Errorf("error points to %d:%d, want %d:%d", err.Line, err.Column, i+2, i+8)
+				}
+				if !strings.Contains(err.Message, tt.message) || !strings.Contains(err.Message, `alias "value" refers to the anchor at line:1, column:9`) {
+					t.Errorf("error lost the type mismatch or anchor location: %s", err.Message)
+				}
+			}
+		})
+	}
+}
 
 func TestParserScriptSource(t *testing.T) {
 	tests := []struct {
@@ -162,6 +306,29 @@ func TestParserScriptSource(t *testing.T) {
 		}
 		if want := (Pos{Line: 2, Col: 12}); *end != want {
 			t.Fatalf("mapped end position is %v but wanted %v", end, want)
+		}
+	})
+
+	t.Run("aliased literal block", func(t *testing.T) {
+		input := "script: &script |\n  echo $foo\nrun: *script\n"
+		var root yaml.Node
+		if err := yaml.Unmarshal([]byte(input), &root); err != nil {
+			t.Fatal(err)
+		}
+		p := &parser{sourceLines: splitSourceLines([]byte(input))}
+		p.resolveAliases(&root)
+		if len(p.errors) != 0 {
+			t.Fatal(p.errors)
+		}
+		for _, n := range []*yaml.Node{root.Content[0].Content[1], root.Content[0].Content[3]} {
+			source := p.scriptSource(n)
+			if source == nil {
+				t.Fatal("literal script lost its source mapping")
+			}
+			pos, ok := source.pos(1, 6)
+			if want := (Pos{Line: 2, Col: 8}); !ok || *pos != want {
+				t.Fatalf("script position is %v (mapped=%v), want %v", pos, ok, want)
+			}
 		}
 	})
 

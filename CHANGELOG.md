@@ -2,35 +2,166 @@
 
 # Unreleased
 
+- Add a GitHub Actions expression reference with evaluated examples for numeric parsing, coercion and workflow conditions, backed by a reproducible 85-case probe and archived measurement results. (kjanat/actionlint#171)
+
+<a id="v1.17.0"></a>
+
+## [v1.17.0](https://github.com/kjanat/actionlint/releases/tag/v1.17.0) - 2026-09-13
+
+- Resolve Go dependency licenses from remote module sources when generating release SBOMs. Document remaining unknown SPDX fields. (kjanat/actionlint#167)
+
+- Document installation through aqua and mise's aqua backend, including registry availability, and pin download-script examples to a commit independently of the requested binary version. (kjanat/actionlint#168)
+
+- **Upgrade note:** the three new cache safety policies are enabled even without a configuration file and can make previously clean workflows exit with status 1. Disable individual checks with `policy.cache-write-untrusted: false`, `policy.cache-call-unrestricted: false`, or `policy.cache-operation: false`, or document a reviewed inline exception. Existing opt-in policies retain their defaults. (kjanat/actionlint#165)
+
+- Support current workflow schema fields and expression objects, including workflow descriptions, cancellation timeouts, image-version filters, stacked pull requests, empty choice options, disabled service images, and UTC timezone aliases.
+
+- Validate action manifests against generated runner schema constraints. Correct workflow expression contexts, matrix inference, function arity, expression depth, scalar decoding, required flags, schedule entries, and step ID checks.
+
+- Document the pinned workflow/action schema audit, complete definition coverage, regression evidence, and retained compatibility differences.
+
+- Enable cache safety policies by default: report explicit writes on low-trust triggers that can use default-branch caches, reusable calls without an explicit cache limit on those triggers, and official cache actions disabled by an explicit mode. Each policy can be disabled in configuration or suppressed on a specific line with a rule name and a reason.
+
+- Add `policy.disallow-suppressions` to prohibit inline cache exceptions for all or selected rules. Select `report: suppression`, `violation`, or `all` to report the prohibited comment, retain the original violation, or report both. (kjanat/actionlint#165)
+
+- Support workflow- and job-level `cache-mode` values, including jobs that call reusable workflows. Check explicit cache access limits through nested local workflow calls, preserving job overrides and the distinction between omitted settings and `none`. Report invalid values and types at their source locations. (kjanat/actionlint#163)
+
+- Report cache operations disabled by a caller's explicit limit through nested local reusable workflows, including parallel child steps. Preserve the original reusable-workflow reference in diagnostics and report lookup failures consistently regardless of file analysis order. (kjanat/actionlint#164; kjanat/actionlint#165)
+
+[Changes][v1.17.0]
+
+<a id="v1.16.1"></a>
+
+## [v1.16.1](https://github.com/kjanat/actionlint/releases/tag/v1.16.1) - 2026-09-09
+
+- Report YAML alias type errors at each invalid alias use, with the anchor location included in the message. Preserve source locations inside anchored content and avoid missing-ref errors for malformed `uses` values. (kjanat/actionlint#149; kjanat/actionlint#154)
+
+- Keep project-discovery test repositories in temporary directories so running tests does not add fake repositories to editors' repository lists. (kjanat/actionlint#150)
+
+- Add a Nix flake with source builds, packaged external linters, completions, the manpage and configuration schema, a development shell, and package integration checks. Update its version during release preparation and require Nix checks before tagging and publishing. (kjanat/actionlint#151; NixOS/nixpkgs#561437; thanks @voidlily for the initial packaging proposal.)
+
+- Allow source packages without Git metadata to run the documentation checker and full test suite, retaining local reusable-workflow checks and normalized diagnostic paths. (kjanat/actionlint#151)
+
+- Restrict release-triggered Pages builds to successful push runs from this repository and grant Pages write and OIDC permissions only to the deployment job. (kjanat/actionlint#148)
+
+- Add upstream conformance tests using GitHub's language-services and runner fixtures, with SchemaStore and YAML Test Suite comparisons. Run them across Linux, macOS, and Windows and report known differences separately from agreements. (kjanat/actionlint#147)
+
+- Expand large-script ShellCheck regression tests across platforms, including a single large workflow and a required diagnostic after a long comment. The underlying stdin deadlock fix already shipped in v1.8.0. (kjanat/actionlint#146; rhysd/actionlint#651)
+
+- Share CI setup and pin the ShellCheck version across runners and pre-commit hooks. (kjanat/actionlint#152)
+
+- Give the release-failure test its own changelog so the full test suite passes after a version bump empties the real `Unreleased` section.
+
+[Changes][v1.16.1]
+
+<a id="v1.16.0"></a>
+
+## [v1.16.0](https://github.com/kjanat/actionlint/releases/tag/v1.16.0) - 2026-09-08
+
+- Derive the Playground version badge and links from Git during the Vite build, and redeploy after successful releases. Releases no longer require editing the Playground HTML. (kjanat/actionlint#144)
+
+- Add inclusive `min-minutes` bounds to the `require-job-timeout` policy, validate minimum/maximum ranges, and expose `RequireJobTimeoutRange` in the Go API. (kjanat/actionlint#55)
+
+- Add the opt-in `require-permissions` policy for explicit workflow-level or per-job permission declarations, including reusable workflow calls. Empty permission mappings satisfy the check. (kjanat/actionlint#83; rhysd/actionlint#728)
+
+- Retry failed GitHub release requests when installing Pandoc in CI, replacing partial downloads and retaining asset verification before installation. (kjanat/actionlint#138)
+
+- Reject YAML anchor and alias names containing `+`, which GitHub Actions does not accept. (kjanat/actionlint#114)
+
+- Compare matrix scalars by YAML type and resolved value. Keep quoted numbers distinct from numbers, recognize equivalent numeric spellings, and preserve the distinction in diagnostics. (kjanat/actionlint#57)
+
+- Validate matrix exclusions against the original rows. Values added by `include` cannot satisfy an exclusion because GitHub processes them afterwards. (rhysd/actionlint#634, thanks @muzimuzhi for the report)
+
+- Place `required-actions` errors at the first job that runs its own steps when an earlier job calls a reusable workflow. (kjanat/actionlint#54)
+
+- Include and export `actionlint.schema.json` in `@kjanat/actionlint`, and export `package.json` from every platform package. (kjanat/actionlint#136)
+
+- Generate accepted JavaScript action runtimes, bundled-runtime availability, and deprecation details from GitHub's runner source. Distinguish invalid metadata values from deprecated and removed runtimes, report Node 20 deprecation for local and known popular actions, and preserve input/output validation for deprecated actions. Refresh the data through `go generate` and weekly Upkeep.
+
+- Allow the `windows-11-arm` alias to overlap `windows-11-vs2026-arm` during its announced Visual Studio 2026 migration while retaining incompatible image diagnostics. (kjanat/actionlint#126)
+
+- Check expressions in composite action input defaults against the runner's narrower set of available contexts, reporting errors at the value in the metadata file. (rhysd/actionlint#46, kjanat/actionlint#131, thanks @johnament)
+
+- Generate action metadata context and special-function rules, including composite step keys, from GitHub's runner schema through the existing `go generate` and weekly Upkeep flow. Extend input-default checks to JavaScript and Docker actions, check composite `shell`, `continue-on-error`, and whole `with`/`env` expressions, and report unavailable status functions or incorrect special-function argument counts. Builds and lint runs use the generated data without downloading the schema. This continues @johnament's work in kjanat/actionlint#124 and kjanat/actionlint#131.
+
+- Use npm trusted publishing through OIDC for the launcher, platform packages, and changelog package. Standardize workflow filenames on `.yml` and update workflow references and publishing configuration.
+
+[Changes][v1.16.0]
+
+<a id="v1.15.1"></a>
+
+## [v1.15.1](https://github.com/kjanat/actionlint/releases/tag/v1.15.1) - 2026-09-07
+
+- Check contexts used in `${{ }}` expressions inside `runs.steps` of a composite action. The `secrets`, `vars`, and `needs` contexts are not available to composite actions; `secrets` and `vars` must be passed as action `inputs:`. This is a first step toward checking the contents of `steps:` in action metadata files. (rhysd/actionlint#46, kjanat/actionlint#124, thanks @johnament)
+
+- Respect quoted `}}` delimiters when scanning composite step expressions, avoiding false context errors for expression-like text inside strings. Cover following expressions, escaped quotes, and UTF-8 text with regression tests. (kjanat/actionlint#124)
+
+- Remove the GPG signing service from floating action tag updates so a signing failure cannot block publishing the digest-pinned action commit. Exact release tags remain separate from these moving aliases.
+
+- Refresh installation and release documentation for the published npm and AUR packages, pending WinGet review, the canonical Homebrew tap, and immutable releases. Update the upstream tracker with released feature versions, Go 1.26 compatibility, and the composite context checks.
+
+[Changes][v1.15.1]
+
+<a id="v1.15.0"></a>
+
+## [v1.15.0](https://github.com/kjanat/actionlint/releases/tag/v1.15.0) - 2026-09-07
+
+- Add a generated `actionlint.schema.json` for configuration completion, hover documentation, and validation in editors. `actionlint -init-config` now includes the YAML Language Server schema directive automatically. The schema follows the Go configuration types and documents where editor validation differs from runtime parsing. (https://github.com/kjanat/actionlint/pull/120)
+
+- Restore Go 1.26 compatibility for source builds and `go install`, while retaining Go 1.27.1 as the preferred development toolchain. (https://github.com/kjanat/actionlint/pull/111)
+
+- Distribute the release binaries through `@kjanat/actionlint` on npm, with eleven platform packages, a launcher that selects the host binary, and the manpage. Call npm publishing as a reusable workflow after the release binaries are uploaded, attested, and checked, avoiding the suppressed `release: published` event when releases use `GITHUB_TOKEN`. Dry runs can test current packaging sources against an existing release. (https://github.com/kjanat/actionlint/pull/95, https://github.com/kjanat/actionlint/pull/123)
+
+- Add automated release updates for the `kjanat/actionlint` Scoop package, the `actionlint-kjanat` and `actionlint-kjanat-bin` AUR packages, and WinGet submissions under `kjanat.actionlint`. The AUR also provides `actionlint-kjanat-git` for builds from `master`; WinGet availability follows review in `winget-pkgs`. Each distribution uses a separate identity for this fork. (https://github.com/kjanat/actionlint/pull/96, https://github.com/kjanat/actionlint/pull/97, https://github.com/kjanat/actionlint/pull/98)
+
+- Publish the Homebrew cask only to `kjanat/tap`, with a manpage and generated Bash, Fish, Zsh, and PowerShell completions (kjanat/actionlint#113, thanks @muzimuzhi). The former `kjanat/actionlint` tap redirects through migration metadata. ShellCheck is optional and can be installed separately from `kjanat/tap/shellcheck`. (https://github.com/kjanat/actionlint/pull/121)
+
+- Pin `kjanat/runner` and `vedantmgoyal9/winget-releaser` to commit SHAs in the workflows. (kjanat/actionlint#115, thanks @sethbacon for the report; kjanat/actionlint#118)
+
+- Refresh the command manual and installation guide to describe current flags, configuration, output formats, completions, and package availability. Document mise's `github:kjanat/actionlint` backend and distinguish fork packages from upstream packages. Update workflow action pins and checkout examples, and link the GitHub Actions changelog reader from the README, docs, and playground. Isolate the changelog monitor's dependency installation from npm workspaces. Extend the version-bump script to cover npm examples and the AUR git package template. (https://github.com/kjanat/actionlint/pull/123)
+
+- Name the fork version in the README demo section next to the upstream one, and keep both current through the new `Upkeep` workflow. It regenerates the section after every release and weekly, and opens a pull request when the text moved, so the default branch no longer goes red the moment this fork or upstream ships. The weekly `go generate` and go-shellcheck bumps moved into the same workflow, each on its own pull request branch, and `make lint` no longer compares the README against the releases. The README check still runs on pull requests that touch the fixture, the script, or the section.
+
+[Changes][v1.15.0]
+
+<a id="v1.14.0"></a>
+
+## [v1.14.0](https://github.com/kjanat/actionlint/releases/tag/v1.14.0) - 2026-09-02
+
+- Accept `github.artifacts` and `github.artifacts_list` as strings in expressions, avoiding false errors for current artifact command files.
+- Correct `github.retention_days` from a number to the string type documented and returned by GitHub Actions.
 - Make successful Docker action runs visible in the step log with the actionlint version, problem count, workflow-file count, and enabled external linters. A run that checks no workflow files is now visibly distinct from a clean run. Document that the action needs a reachable Docker daemon, that `ubuntu-slim` is unsupported despite including the Docker client, that standard Arm Ubuntu runners are supported, and that daemon-less runners can download the binary instead. (https://github.com/kjanat/actionlint/issues/56)
 - Point SARIF tool and rule-documentation metadata at this fork, and use one canonical template for both the documented CLI format and the Docker action so the two cannot drift.
 - Name the module in the first line of `-version`, so `actionlint.kjanat.dev v1.13.0` tells this fork apart from upstream actionlint on a machine holding both. `make build` now stamps the version with `git describe --tags`, so a checkout build reports `v1.13.0-3-gabc1234` instead of a pseudo-version or `(devel)`. The second line names how the binary got there: `from source`, `go install` (detected from the build info: a real version with no VCS stamp means a module install), the release page URL such as `https://github.com/kjanat/actionlint/releases/tag/v1.14.0`, or `official Docker image`, replacing the `installed by ...` sentences. (https://github.com/kjanat/actionlint/issues/66)
 - Publish `1` and `1.13` floating tags for the CLI image next to the exact version and `latest`, moved only when the release is the newest of its line the way the `action-v1` alias already worked. The images additionally carry SBOM attestations, explicit max-level provenance, and OCI labels and index annotations generated from the repository metadata, the release smoke-tests both images before either is pushed and reuses their build caches for the multi-platform pushes, both image digests get a signed GitHub build-provenance attestation, and every release archive gets a syft-generated SPDX SBOM asset, so `gh attestation verify oci://docker.io/kjanat/actionlint:latest -R kjanat/actionlint` passes from this release on, and the same holds for the `ghcr.io` name. (https://github.com/kjanat/actionlint/issues/80)
 - Pin the action's runtime image to the digest it was published as. `action.yml` names the image by tag when the release commit is made, because the image does not exist yet at that point, so the release now rewrites it to `action-{version}@sha256:...` afterwards and points the moving `v1` tag at that commit. `uses: kjanat/actionlint@v1` therefore resolves an action whose image cannot be replaced under it. The pinned commit is reachable through the major tag alone and never lands on the default branch, where a stale digest would survive the next version bump, and `uses: kjanat/actionlint@v1.14.0` still reads the tagged `action.yml`, which carries the tag reference.
 - Make `bump-version` move the `Unreleased` changelog entries into a dated section for the version it releases, so the bump commit carries the complete changelog and a release leaves no manual changelog work behind.
+- Raise the minimum Go version to 1.27, so `go install actionlint.kjanat.dev/cmd/actionlint@latest` needs a 1.27 toolchain. CI reads the version from `go.mod`, runs the unit tests on `ubuntu-26.04`, `ubuntu-26.04-arm`, `macos-26`, `macos-26-intel`, `windows-2025-vs2026` and `windows-11-vs2026-arm`, checks the generated Go tables against their generators, builds a goreleaser snapshot with SBOMs on every pull request, and the default branch requires a pull request with every check green. (https://github.com/kjanat/actionlint/pull/106)
+
+[Changes][v1.14.0]
 
 <a id="v1.13.0"></a>
 
 ## [v1.13.0](https://github.com/kjanat/actionlint/releases/tag/v1.13.0) - 2026-08-29
 
 - Add an opt-in `policy:` mapping to the configuration file for checks that enforce a convention the repository chose for itself. GitHub runs a workflow that violates one without complaining, so every policy check stays off until its key turns it on, and a repository with no configuration file never sees them. Correctness checks always run and are unaffected. (https://github.com/kjanat/actionlint/pull/39)
-- Add the `require-commit-hash` policy check. It reports a `uses:` which names something that can move: an action or reusable workflow whose ref is not 40 or 64 hexadecimal digits, and a `docker://` image without a `{image}@{algorithm}:{hex}` digest. Local `./` and `$/` references carry no ref and a `uses:` built with `${{ }}` cannot be read, so the check passes over them. (rhysd/actionlint#435, thanks @jmeickle-theaiinstitute; rhysd/actionlint#524, thanks @perryd01; https://github.com/kjanat/actionlint/pull/40)
-- Add the `require-job-timeout` policy check. It reports a job which sets no `timeout-minutes:`, which GitHub cancels only after its default of 360 minutes. The value can also be a mapping whose `max-minutes` key additionally reports a job whose timeout exceeds that number. A job calling a reusable workflow cannot set the key and is passed over. (https://github.com/kjanat/actionlint/pull/44)
-- Add the `required-actions` policy check. It reports a workflow which does not use an action the repository requires. An entry is written like a `uses:` value and both halves are glob patterns, so `actions/checkout` accepts any ref and `actions/checkout@v4*` accepts `v4` and `v4.2.2`. One error per missing action is reported at the first job of the workflow. (https://github.com/kjanat/actionlint/pull/43)
-- Add a `config-secrets` allowlist to the configuration file. When an array is set, `secrets` properties are checked against it case-insensitively. The secrets GitHub always provides (`GITHUB_TOKEN`, `ACTIONS_STEP_DEBUG`, `ACTIONS_RUNNER_DEBUG`) and secrets declared in `on.workflow_call.secrets` are always allowed. (https://github.com/kjanat/actionlint/pull/42)
+- Add the `require-commit-hash` policy check. It reports a `uses:` which names something that can move: an action or reusable workflow whose ref is not 40 or 64 hexadecimal digits, and a `docker://` image without a `{image}@{algorithm}:{hex}` digest. Local `./` and `$/` references carry no ref and a `uses:` built with `${{ }}` cannot be read, so the check passes over them. (rhysd/actionlint#436, thanks @mortenson; rhysd/actionlint#435, thanks @jmeickle-theaiinstitute; rhysd/actionlint#524, thanks @perryd01; https://github.com/kjanat/actionlint/pull/40)
+- Add the `require-job-timeout` policy check. It reports a job which sets no `timeout-minutes:`, which GitHub cancels only after its default of 360 minutes. The value can also be a mapping whose `max-minutes` key additionally reports a job whose timeout exceeds that number. A job calling a reusable workflow cannot set the key and is passed over. (rhysd/actionlint#581, thanks @TomNorth; https://github.com/kjanat/actionlint/pull/44)
+- Add the `required-actions` policy check. It reports a workflow which does not use an action the repository requires. An entry is written like a `uses:` value and both halves are glob patterns, so `actions/checkout` accepts any ref and `actions/checkout@v4*` accepts `v4` and `v4.2.2`. One error per missing action is reported at the first job of the workflow. (rhysd/actionlint#469, rhysd/actionlint#474, thanks @chrisreddington for the idea; https://github.com/kjanat/actionlint/pull/43)
+- Add a `config-secrets` allowlist to the configuration file. When an array is set, `secrets` properties are checked against it case-insensitively. The secrets GitHub always provides (`GITHUB_TOKEN`, `ACTIONS_STEP_DEBUG`, `ACTIONS_RUNNER_DEBUG`) and secrets declared in `on.workflow_call.secrets` are always allowed. (rhysd/actionlint#649, thanks @tdeo; https://github.com/kjanat/actionlint/pull/42)
 - Check the permissions a job passes on when it calls a local reusable workflow, reporting a callee that needs a scope the caller does not grant. The new `assume-default-permissions` configuration key (`restricted` or `permissive`) tells actionlint which repository "Workflow permissions" setting to assume for a calling job that declares no `permissions:` and whose workflow declares none either. (rhysd/actionlint#670, thanks @SeriousBug; rhysd/actionlint#552, thanks @ianlewis; https://github.com/kjanat/actionlint/pull/41)
 - Resolve YAML aliases in reusable workflow metadata read from disk, and keep unused anchors non-fatal there, so a callee using `&anchor` and `*anchor` no longer fails metadata extraction. (https://github.com/kjanat/actionlint/pull/41)
 - Add a `-completion` flag printing a completion script for bash, zsh, fish, or PowerShell to stdout, with `auto` picking the shell from `$SHELL`. `-completions` is accepted as an alias. (rhysd/actionlint#716, rhysd/actionlint#300, thanks @Freed-Wu; https://github.com/kjanat/actionlint/pull/45)
-- Type a scalar matrix value the way GitHub resolves it, from the YAML tag the parser already determined, instead of re-deriving the type from the decoded text. A quoted scalar, a scalar tagged `!!str`, and a block scalar are always `string`. A plain scalar is read with the YAML 1.2 core schema, which is stricter than the YAML library's own resolution, so `0b10`, `-0x10` and `1_000` stay `string` as GitHub reads them. A quoted numeric matrix value is therefore a string now, so `timeout-minutes: ${{ matrix.version }}` with `version: ["3.10"]` reports a type error it did not report before, and workflows that quote numbers in a matrix may see new errors. An explicitly tagged matrix scalar whose value the tag does not accept is now reported, as is a tag other than `!!str` on a quoted or block scalar, and any tag outside `!!str`, `!!bool`, `!!int`, `!!float` and `!!null`. GitHub rejects all three when it parses the workflow. (rhysd/actionlint#250, thanks @altendky; https://github.com/kjanat/actionlint/pull/38)
+- Type a scalar matrix value the way GitHub resolves it, from the YAML tag the parser already determined, instead of re-deriving the type from the decoded text. A quoted scalar, a scalar tagged `!!str`, and a block scalar are always `string`. A plain scalar is read with the YAML 1.2 core schema, which is stricter than the YAML library's own resolution, so `0b10`, `-0x10` and `1_000` stay `string` as GitHub reads them. A quoted numeric matrix value is therefore a string now, so `timeout-minutes: ${{ matrix.version }}` with `version: ["3.10"]` reports a type error it did not report before, and workflows that quote numbers in a matrix may see new errors. An explicitly tagged matrix scalar whose value the tag does not accept is now reported, as is a tag other than `!!str` on a quoted or block scalar, and any tag outside `!!str`, `!!bool`, `!!int`, `!!float` and `!!null`. GitHub rejects all three when it parses the workflow. (rhysd/actionlint#727, thanks @hdimer; rhysd/actionlint#250, thanks @altendky; https://github.com/kjanat/actionlint/pull/38)
 - Validate the steps of a composite action. Each item in `runs.steps` must be a mapping in one of the two shapes the runner accepts: a script step with `run:` and `shell:`, or an action step with `uses:`. A step which mixes the two shapes, misses `shell:` next to `run:`, carries a key the runner does not know such as `parallel:` or `timeout-minutes:`, holds a non-string value at `run:`, `shell:`, or `uses:`, has an empty `uses:`, is `null`, or calls a reusable workflow at `uses:` is reported. (rhysd/actionlint#277, thanks @stefreak; https://github.com/kjanat/actionlint/pull/70)
 - Report errors found in local action metadata at the `action.yml` file and line that holds them instead of at the workflow's `uses:` site. (https://github.com/kjanat/actionlint/pull/70)
 - Match any property name with a `**` key in untrusted input maps. (rhysd/actionlint#332, rhysd/actionlint#345, thanks @hugo-syn; https://github.com/kjanat/actionlint/pull/37)
-- Accept the `copilot-requests` and `drives` permission scopes. (https://github.com/kjanat/actionlint/pull/28)
-- Accept a plus sign and a leading zero in the exponent part of number literals, which GitHub's expression parser accepts. (https://github.com/kjanat/actionlint/pull/29)
+- Accept the `copilot-requests` and `drives` permission scopes. (rhysd/actionlint#689, thanks @v1v for `copilot-requests`; https://github.com/kjanat/actionlint/pull/28)
+- Accept a plus sign and a leading zero in the exponent part of number literals, which GitHub's expression parser accepts. (rhysd/actionlint#708, thanks @semx for the exponent-sign fix; https://github.com/kjanat/actionlint/pull/29)
 - Reject self-repository `$/` `uses:` values that name no path. (https://github.com/kjanat/actionlint/pull/30)
-- List all expected keys of a `workflow_dispatch` input in the unexpected-key error message. (https://github.com/kjanat/actionlint/pull/25)
-- Add OCI source and license labels to the runtime image, so a pulled image maps back to this repository and GHCR links the container package to it. (https://github.com/kjanat/actionlint/pull/26)
-- Add a pre-commit hook that installs ShellCheck alongside actionlint. (https://github.com/kjanat/actionlint/pull/31)
+- List all expected keys of a `workflow_dispatch` input in the unexpected-key error message. (rhysd/actionlint#715, thanks @Socialpranker; https://github.com/kjanat/actionlint/pull/25)
+- Add OCI source and license labels to the runtime image, so a pulled image maps back to this repository and GHCR links the container package to it. (rhysd/actionlint#653, thanks @nozomiishii; https://github.com/kjanat/actionlint/pull/26)
+- Add a pre-commit hook that installs ShellCheck alongside actionlint. (rhysd/actionlint#482, thanks @kadykov; https://github.com/kjanat/actionlint/pull/31)
 - Add a hosted expression conformance probe that submits expressions to GitHub Actions and records how GitHub's own parser evaluates them, treating that parser as the oracle for expression semantics. (https://github.com/kjanat/actionlint/pull/35)
 
 [Changes][v1.13.0]
@@ -68,7 +199,7 @@
 - Replace `scripts/bump-version.bash` with a Go tool that declares every version-bearing file and its expected occurrence count, verifies each update, refuses to run on a dirty tree or an existing tag, and pushes only with an explicit flag. (https://github.com/kjanat/actionlint/pull/17)
 - Raise the minimum Go version to 1.26 with Go 1.27 as the CI default, replace the 6x2 test matrix with seven targeted jobs plus one race and coverage job, cancel superseded pull request runs, and pin every action and Docker base image to a commit SHA. (https://github.com/kjanat/actionlint/pull/14)
 - Consolidate the JavaScript tooling into a single root npm workspace with one lockfile. (https://github.com/kjanat/actionlint/pull/15)
-- Add a first-party Docker action with validated inputs, GitHub annotations, multiple output formats, and structured result outputs, following up on rhysd/actionlint#257 and rhysd/actionlint#479. Release images are published as `action-{version}`, `action-v1`, and `action-latest`, so consumer workflows pull a prebuilt actionlint, ShellCheck, and pyflakes image instead of compiling actionlint. Releases also update the moving `v1` Git tag for `kjanat/actionlint@v1`. (https://github.com/kjanat/actionlint/pull/5)
+- Add a first-party Docker action with validated inputs, GitHub annotations, multiple output formats, and structured result outputs, following up on rhysd/actionlint#257 and rhysd/actionlint#479. Release images are published as `action-{version}`, `action-v1`, and `action-latest`, so consumer workflows pull a prebuilt actionlint, ShellCheck, and pyflakes image instead of compiling actionlint. Releases also update the moving `v1` Git tag for `kjanat/actionlint@v1`. (https://github.com/kjanat/actionlint/pull/5, thanks @norwd)
 - Harden the Docker action and its release path by containing configuration and workflow inputs within the workspace, rejecting option-like paths and directory output destinations before linting, bounding actionlint execution time, pinning the Alpine runtime, defaulting the CLI image to `/w`, serializing releases before moving mutable image aliases, and verifying every expected version replacement independently.
 - Restore the generated command manual to the fork's Pages deployment at `usage.html` and `man.html`, add a `404.html` fallback, and document whether each third-party integration uses this fork, upstream actionlint, or a configurable local executable.
 - Report ShellCheck findings at their exact YAML source locations for literal block and plain `run:` scripts, including precise ranges. Scalar forms that cannot be mapped safely continue to report at the `run:` key. (rhysd/actionlint#88, rhysd/actionlint#360; building on the direction explored in rhysd/actionlint#556, thanks @dpsutton)
@@ -93,7 +224,7 @@
 - Support `background`, `wait`, `wait-all`, `cancel`, and `parallel` steps, including validation of background-step references and invalid nested parallel steps. (rhysd/actionlint#695, thanks @devantler)
 - Support the `code-quality` and `vulnerability-alerts` permission scopes with their GitHub-supported access levels, and accept the `models` and `repository-projects` permission names. (rhysd/actionlint#674, thanks @smlx; rhysd/actionlint#714, thanks @kalverra)
 - Support `$/path` self-repository references for actions and reusable workflows, including local metadata, input, and output validation. (rhysd/actionlint#711)
-- Support `job.workflow_file_path`, `job.workflow_ref`, `job.workflow_repository`, `job.workflow_sha`, and `jobs.<job_id>.result` in expressions. (rhysd/actionlint#696, thanks @nikolauspschuetz; rhysd/actionlint#707, thanks @l46983284-cpu; rhysd/actionlint#724, thanks @Eljees)
+- Support `job.workflow_file_path`, `job.workflow_ref`, `job.workflow_repository`, `job.workflow_sha`, and `jobs.<job_id>.result` in expressions. (rhysd/actionlint#696, thanks @nikolauspschuetz; rhysd/actionlint#707, thanks @alexchen-sys; rhysd/actionlint#724, thanks @Eljees)
 - Avoid false errors for repository secrets in reusable workflows that also define another trigger. (rhysd/actionlint#701, rhysd/actionlint#703, thanks @Eljees)
 - Support the `destroyed` activity type for the `merge_group` event and refresh the generated webhook activity types. (rhysd/actionlint#726)
 - Update the popular actions data set with current major releases, including `actions/checkout@v7`, `actions/cache@v6`, `actions/setup-go@v7`, and `codecov/codecov-action@v7`. (Based on rhysd/actionlint#718, thanks @kolyshkin)
@@ -105,7 +236,7 @@
 ## [v1.8.0](https://github.com/kjanat/actionlint/releases/tag/v1.8.0) - 2026-08-19
 
 - Add support for `entrypoint` and `command` in service containers. (rhysd/actionlint#645, thanks @mkusaka)
-- Fix a macOS ShellCheck integration deadlock when linting large scripts concurrently. (rhysd/actionlint#651, thanks @attehuhtakangas)
+- Fix a ShellCheck integration deadlock when script input fills the pipe before the child starts. Reproduced on macOS and Linux, including a single large `run:` step. (rhysd/actionlint#651, thanks @attehuhtakangas for the fix and @kjanat for the Linux reproducer)
 - Support the [`queue` configuration in workflow- and job-level `concurrency`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency). The documented literal values `single` (default) and `max` are accepted, and invalid values or `queue: max` combined with `cancel-in-progress: true` are reported as errors. (rhysd/actionlint#654, rhysd/actionlint#657, thanks @vvoland)
 - Support the `ubuntu-26.04`, `ubuntu-26.04-arm`, `xcode-27`, `xcode-27-xlarge`, and `windows-11-vs2026-arm` runner labels. (rhysd/actionlint#683, thanks @ericcornelissen; rhysd/actionlint#710, thanks @TheAlphaEngineerCode)
 - Follow the moving runner aliases: `macos-latest` now maps to `macos-26`, `macos-latest-large` maps to `macos-26-large`, and `windows-latest` and `windows-2025` map to `windows-2025-vs2026`. The macOS and Windows migrations are confirmed in [actions/runner-images#14167](https://github.com/actions/runner-images/issues/14167) and [actions/runner-images#14017](https://github.com/actions/runner-images/issues/14017).
@@ -2079,7 +2210,7 @@ docker run --rm -v $(pwd):/repo --workdir /repo rhysd/actionlint:latest -color
 
 - [Problem Matchers](https://github.com/actions/toolkit/blob/master/docs/problem-matchers.md) is now officially supported by actionlint, which annotates errors from actionlint on GitHub as follows. The matcher definition is maintained at [`.github/actionlint-matcher.json`](https://github.com/rhysd/actionlint/blob/main/.github/actionlint-matcher.json) by [script](https://github.com/rhysd/actionlint/tree/main/scripts/generate-actionlint-matcher). For the usage, see [the document](https://github.com/rhysd/actionlint/blob/main/docs/usage.md#problem-matchers).
 
-<img src="https://github.com/rhysd/ss/blob/master/actionlint/problem-matcher.png?raw=true" alt="annotation by Problem Matchers" width="715" height="221"/>
+<img src="https://cdn.jsdelivr.net/gh/rhysd/ss@5530c2526b44ad28dc12f91a3d71bcd57940f008/actionlint/problem-matcher.png?raw=true" alt="annotation by Problem Matchers" width="715" height="221" />
 
 - `runner_label` rule now checks conflicts in labels at `runs-on`. For example, there is no runner which meats both `ubuntu-latest` and `windows-latest`. This kind of misconfiguration sometimes happen when a beginner misunderstands the usage of `runs-on:`. To run a job on each runners, `matrix:` should be used. See [the document](https://github.com/rhysd/actionlint/blob/main/docs/checks.md#check-runner-labels) for more information.
 
@@ -2412,6 +2543,12 @@ See documentation for more details:
 
 [Changes][v1.0.0]
 
+[v1.17.0]: https://github.com/kjanat/actionlint/compare/v1.16.1...v1.17.0
+[v1.16.1]: https://github.com/kjanat/actionlint/compare/v1.16.0...v1.16.1
+[v1.16.0]: https://github.com/kjanat/actionlint/compare/v1.15.1...v1.16.0
+[v1.15.1]: https://github.com/kjanat/actionlint/compare/v1.15.0...v1.15.1
+[v1.15.0]: https://github.com/kjanat/actionlint/compare/v1.14.0...v1.15.0
+[v1.14.0]: https://github.com/kjanat/actionlint/compare/v1.13.0...v1.14.0
 [v1.13.0]: https://github.com/kjanat/actionlint/compare/v1.12.0...v1.13.0
 [v1.12.0]: https://github.com/kjanat/actionlint/compare/v1.11.0...v1.12.0
 [v1.11.0]: https://github.com/kjanat/actionlint/compare/v1.10.0...v1.11.0

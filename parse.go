@@ -51,10 +51,9 @@ func newString(n *yaml.Node) *String {
 // workflowMappingEntry represents a key-value entry in YAML mapping.
 type workflowMappingEntry struct {
 	// id is a key in lower case for comparing case-insensitive keys.
-	id      string
-	key     *String
-	keyNode *yaml.Node
-	val     *yaml.Node
+	id  string
+	key *String
+	val *yaml.Node
 }
 
 type delayedSprintf struct {
@@ -80,6 +79,7 @@ func (l *delayedSprintf) String() string {
 type parser struct {
 	errors      []*Error
 	sourceLines []string
+	aliases     map[*yaml.Node]*yaml.Node
 }
 
 func splitSourceLines(b []byte) []string {
@@ -220,8 +220,17 @@ func (p *parser) errorf(n *yaml.Node, format string, args ...any) {
 	p.error(n, m)
 }
 
+func (p *parser) typeErrorf(n *yaml.Node, format string, args ...any) {
+	m := fmt.Sprintf(format, args...)
+	if alias, ok := p.aliases[n]; ok {
+		m += fmt.Sprintf(". alias %q refers to the anchor at line:%d, column:%d", alias.Value, n.Line, n.Column)
+		n = alias
+	}
+	p.error(n, m)
+}
+
 func (p *parser) resolveAliases(root *yaml.Node) {
-	resolveYAMLAliases(root, func(n *yaml.Node, d yamlAliasDiagnostic, m string) {
+	p.aliases = resolveYAMLAliases(root, func(n *yaml.Node, d yamlAliasDiagnostic, m string) {
 		p.error(n, m)
 	})
 }
@@ -234,20 +243,25 @@ type yamlAliasDiagnostic int
 const (
 	yamlAliasDiagnosticRecursive yamlAliasDiagnostic = iota
 	yamlAliasDiagnosticUnusedAnchor
+	yamlAliasDiagnosticInvalidName
 )
 
-func resolveYAMLAliases(root *yaml.Node, report func(n *yaml.Node, d yamlAliasDiagnostic, m string)) {
+func resolveYAMLAliases(root *yaml.Node, report func(n *yaml.Node, d yamlAliasDiagnostic, m string)) map[*yaml.Node]*yaml.Node {
 	type usage struct {
 		used    bool
 		defined bool
 	}
 
 	anchors := map[*yaml.Node]*usage{}
+	var aliases map[*yaml.Node]*yaml.Node
 
 	var resolve func(*yaml.Node) // For recursive call
 	resolve = func(n *yaml.Node) {
 		var u *usage
 		if len(n.Anchor) != 0 {
+			if strings.ContainsRune(n.Anchor, '+') {
+				report(n, yamlAliasDiagnosticInvalidName, fmt.Sprintf("anchor name %q contains '+' which is not allowed by GitHub Actions", n.Anchor))
+			}
 			u = &usage{}
 			anchors[n] = u
 		}
@@ -256,11 +270,20 @@ func resolveYAMLAliases(root *yaml.Node, report func(n *yaml.Node, d yamlAliasDi
 				resolve(c)
 				continue
 			}
+			if strings.ContainsRune(c.Value, '+') {
+				report(c, yamlAliasDiagnosticInvalidName, fmt.Sprintf("alias name %q contains '+' which is not allowed by GitHub Actions", c.Value))
+			}
 			// Note: Unknown anchors are detected by go-yaml parser so we don't need to detect them by ourselves.
 			if u, ok := anchors[c.Alias]; ok {
 				u.used = true
 				if u.defined {
-					n.Content[i] = c.Alias // Resolved
+					// Keep each alias use distinct without relocating the anchored content.
+					resolved := *c.Alias
+					n.Content[i] = &resolved
+					if aliases == nil {
+						aliases = map[*yaml.Node]*yaml.Node{}
+					}
+					aliases[&resolved] = c
 				} else {
 					// Don't resolve the recursive alias because it causes stack overflow on parsing the tree as
 					// `RawYAMLValue`. (#610)
@@ -279,6 +302,7 @@ func resolveYAMLAliases(root *yaml.Node, report func(n *yaml.Node, d yamlAliasDi
 			report(n, yamlAliasDiagnosticUnusedAnchor, fmt.Sprintf("anchor %q is defined but not used", n.Anchor))
 		}
 	}
+	return aliases
 }
 
 func (p *parser) unexpectedKey(s *String, sec string, expected []string) {
@@ -307,7 +331,7 @@ func (p *parser) checkNotEmpty(sec string, count int, n *yaml.Node) bool {
 
 func (p *parser) checkSequence(sec string, n *yaml.Node, allowEmpty bool) bool {
 	if n.Kind != yaml.SequenceNode {
-		p.errorf(n, "%q section must be sequence node but got %s node with %q tag", sec, nodeKindName(n.Kind), n.Tag)
+		p.typeErrorf(n, "%q section must be sequence node but got %s node with %q tag", sec, nodeKindName(n.Kind), n.Tag)
 		return false
 	}
 	return allowEmpty || p.checkNotEmpty(sec, len(n.Content), n)
@@ -317,7 +341,10 @@ func (p *parser) checkString(n *yaml.Node, allowEmpty bool) bool {
 	// Do not check n.Tag is !!str because we don't need to check the node is string strictly.
 	// In almost all cases, other nodes (like 42) are handled as string with its string representation.
 	if n.Kind != yaml.ScalarNode {
-		p.errorf(n, "expected scalar node for string value but found %s node with %q tag", nodeKindName(n.Kind), n.Tag)
+		p.typeErrorf(n, "expected scalar node for string value but found %s node with %q tag", nodeKindName(n.Kind), n.Tag)
+		return false
+	}
+	if !p.checkRawYAMLTag(n) {
 		return false
 	}
 	if !allowEmpty && n.Value == "" {
@@ -328,7 +355,7 @@ func (p *parser) checkString(n *yaml.Node, allowEmpty bool) bool {
 }
 
 func (p *parser) missingExpression(n *yaml.Node, expecting string) {
-	p.errorf(n, "expecting a single ${{...}} expression or %s, but found plain text node", expecting)
+	p.typeErrorf(n, "expecting a single ${{...}} expression or %s, but found plain text node", expecting)
 }
 
 func (p *parser) parseExpression(n *yaml.Node, expecting string) *String {
@@ -356,6 +383,16 @@ func (p *parser) parseString(n *yaml.Node, allowEmpty bool) *String {
 	return newString(n)
 }
 
+// parseStaticString folds a sole literal expression before downstream validation.
+func (p *parser) parseStaticString(n *yaml.Node) *String {
+	if value := literalExpressionValue(n.Value); value != nil {
+		literal := *n
+		literal.Value = *value
+		return p.parseString(&literal, false)
+	}
+	return p.parseString(n, false)
+}
+
 func (p *parser) parseStringSequence(sec string, n *yaml.Node, allowEmpty bool) []*String {
 	if ok := p.checkSequence(sec, n, allowEmpty); !ok {
 		return nil
@@ -380,9 +417,20 @@ func (p *parser) parseStringOrStringSequence(sec string, n *yaml.Node) []*String
 	}
 }
 
+func (p *parser) parseLiteralBool(n *yaml.Node) *Bool {
+	if n.Kind != yaml.ScalarNode || n.Tag != yamlTagBool {
+		p.typeErrorf(n, "expected boolean literal but found %s node with %q tag", nodeKindName(n.Kind), n.Tag)
+		return nil
+	}
+	return p.parseBool(n)
+}
+
 func (p *parser) parseBool(n *yaml.Node) *Bool {
 	if n.Kind != yaml.ScalarNode || (n.Tag != yamlTagBool && n.Tag != yamlTagStr) {
-		p.errorf(n, "expected bool value but found %s node with %q tag", nodeKindName(n.Kind), n.Tag)
+		p.typeErrorf(n, "expected bool value but found %s node with %q tag", nodeKindName(n.Kind), n.Tag)
+		return nil
+	}
+	if !p.checkRawYAMLTag(n) {
 		return nil
 	}
 
@@ -395,14 +443,17 @@ func (p *parser) parseBool(n *yaml.Node) *Bool {
 	}
 
 	return &Bool{
-		Value: n.Value == "true",
+		Value: strings.EqualFold(n.Value, "true"),
 		Pos:   posAt(n),
 	}
 }
 
 func (p *parser) parseInt(n *yaml.Node) *Int {
 	if n.Kind != yaml.ScalarNode || (n.Tag != yamlTagInt && n.Tag != yamlTagStr) {
-		p.errorf(n, "expected scalar node for integer value but found %s node with %q tag", nodeKindName(n.Kind), n.Tag)
+		p.typeErrorf(n, "expected scalar node for integer value but found %s node with %q tag", nodeKindName(n.Kind), n.Tag)
+		return nil
+	}
+	if !p.checkRawYAMLTag(n) {
 		return nil
 	}
 
@@ -417,7 +468,7 @@ func (p *parser) parseInt(n *yaml.Node) *Int {
 		}
 	}
 
-	i, err := strconv.Atoi(n.Value)
+	i, err := parseYAMLInteger(n.Value)
 	if err != nil {
 		p.errorf(n, "invalid integer value: %q: %s", n.Value, err.Error())
 		return nil
@@ -429,9 +480,39 @@ func (p *parser) parseInt(n *yaml.Node) *Int {
 	}
 }
 
+// parseYAMLInteger follows the runner's decimal, hexadecimal and octal grammar.
+// Radix-prefixed integers use the runner's signed 32-bit representation.
+func parseYAMLInteger(value string) (int, error) {
+	base := 0
+	if strings.HasPrefix(value, "0x") {
+		base = 16
+	} else if strings.HasPrefix(value, "0o") {
+		base = 8
+	}
+	if base == 0 {
+		return strconv.Atoi(value)
+	}
+	if !reCoreSchemaInt.MatchString(value) {
+		return 0, errors.New("invalid YAML integer")
+	}
+	n, err := strconv.ParseUint(value[2:], base, 32)
+	if err != nil {
+		return 0, err
+	}
+	// Decode the runner's two's-complement representation without narrowing
+	// an unsigned value into a signed type. Both branches fit a 32-bit int.
+	if n <= math.MaxInt32 {
+		return int(n), nil
+	}
+	return -1 - int(math.MaxUint32-n), nil
+}
+
 func (p *parser) parseFloat(n *yaml.Node) *Float {
 	if n.Kind != yaml.ScalarNode || (n.Tag != yamlTagFloat && n.Tag != yamlTagInt && n.Tag != yamlTagStr) {
-		p.errorf(n, "expected scalar node for float value but found %s node with %q tag", nodeKindName(n.Kind), n.Tag)
+		p.typeErrorf(n, "expected scalar node for float value but found %s node with %q tag", nodeKindName(n.Kind), n.Tag)
+		return nil
+	}
+	if !p.checkRawYAMLTag(n) {
 		return nil
 	}
 
@@ -446,9 +527,21 @@ func (p *parser) parseFloat(n *yaml.Node) *Float {
 		}
 	}
 
-	f, err := strconv.ParseFloat(n.Value, 64)
-	if err != nil || math.IsNaN(f) {
+	var f float64
+	var err error
+	if strings.HasPrefix(n.Value, "0x") || strings.HasPrefix(n.Value, "0o") {
+		var i int
+		i, err = parseYAMLInteger(n.Value)
+		f = float64(i)
+	} else {
+		f, err = strconv.ParseFloat(n.Value, 64)
+	}
+	if err != nil {
 		p.errorf(n, "invalid float value: %q: %s", n.Value, err.Error())
+		return nil
+	}
+	if math.IsNaN(f) {
+		p.errorf(n, "invalid float value: %q: NaN is not a finite number", n.Value)
 		return nil
 	}
 
@@ -468,14 +561,19 @@ func (p *parser) parseMapping(where delayedSprintf, n *yaml.Node, allowEmpty, ca
 		}
 
 		if n.Kind != yaml.MappingNode {
-			p.errorf(n, "%s is %s node but mapping node is expected", where.String(), nodeKindName(n.Kind))
+			p.typeErrorf(n, "%s is %s node but mapping node is expected", where.String(), nodeKindName(n.Kind))
 			return
 		}
 
 		keys := make(map[string]*Pos, len(n.Content)/2)
 		empty := true
 		for i := 0; i < len(n.Content); i += 2 {
-			k := p.parseString(n.Content[i], false)
+			if !p.checkString(n.Content[i], false) {
+				p.checkRawYAMLTags(n.Content[i+1])
+				empty = false
+				continue
+			}
+			k := newString(n.Content[i])
 
 			if k.Value == "<<" {
 				p.errorAt(k.Pos, "GitHub Actions does not support YAML merge key \"<<\"")
@@ -501,7 +599,7 @@ func (p *parser) parseMapping(where delayedSprintf, n *yaml.Node, allowEmpty, ca
 				continue
 			}
 
-			if !yield(workflowMappingEntry{id, k, n.Content[i], n.Content[i+1]}) {
+			if !yield(workflowMappingEntry{id, k, n.Content[i+1]}) {
 				break
 			}
 
@@ -531,9 +629,11 @@ func (p *parser) parseScheduleEvent(pos *Pos, n *yaml.Node) *ScheduledEvent {
 	schedules := make([]*ScheduleEntry, 0, len(n.Content))
 	for _, c := range n.Content {
 		entry := &ScheduleEntry{}
+		cronGiven := false
 		for e := range p.parseMappingAt("element of \"schedule\" section", c, false, true) {
 			switch e.id {
 			case "cron":
+				cronGiven = true
 				if s := p.parseString(e.val, false); s.Value != "" {
 					entry.Cron = s
 				}
@@ -547,6 +647,8 @@ func (p *parser) parseScheduleEvent(pos *Pos, n *yaml.Node) *ScheduledEvent {
 		}
 		if entry.Cron != nil {
 			schedules = append(schedules, entry)
+		} else if !cronGiven && c.Kind == yaml.MappingNode && len(c.Content) != 0 {
+			p.error(c, "\"cron\" is missing in element of \"schedule\" section")
 		}
 	}
 
@@ -562,7 +664,7 @@ func (p *parser) parseWorkflowDispatchEventInput(name *String, n *yaml.Node) *Di
 		case "description":
 			ret.Description = p.parseString(e.val, true)
 		case "required":
-			ret.Required = p.parseBool(e.val)
+			ret.Required = p.parseLiteralBool(e.val)
 		case "default":
 			ret.Default = p.parseString(e.val, true)
 		case "type":
@@ -584,7 +686,11 @@ func (p *parser) parseWorkflowDispatchEventInput(name *String, n *yaml.Node) *Di
 				p.errorf(e.val, `input type of workflow_dispatch event must be one of "string", "number", "boolean", "choice", "environment" but got %q`, e.val.Value)
 			}
 		case "options":
-			ret.Options = p.parseStringSequence("options", e.val, false)
+			if p.checkSequence("options", e.val, false) {
+				for _, option := range e.val.Content {
+					ret.Options = append(ret.Options, p.parseString(option, true))
+				}
+			}
 		default:
 			p.unexpectedKey(e.key, "inputs", []string{"description", "required", "default", "type", "options"})
 		}
@@ -693,7 +799,7 @@ func (p *parser) parseWorkflowCallEventInput(id string, name *String, n *yaml.No
 		case "description":
 			ret.Description = p.parseString(e.val, true)
 		case "required":
-			ret.Required = p.parseBool(e.val)
+			ret.Required = p.parseLiteralBool(e.val)
 		case "default":
 			ret.Default = p.parseString(e.val, true)
 		case "type":
@@ -732,7 +838,7 @@ func (p *parser) parseWorkflowCallEventSecret(name *String, n *yaml.Node) *Workf
 		case "description":
 			ret.Description = p.parseString(e.val, true)
 		case "required":
-			ret.Required = p.parseBool(e.val)
+			ret.Required = p.parseLiteralBool(e.val)
 		default:
 			p.unexpectedKey(e.key, "secrets", []string{"description", "required"})
 		}
@@ -799,12 +905,14 @@ func (p *parser) parseImageVersionEvent(pos *Pos, n *yaml.Node) *ImageVersionEve
 
 	for e := range p.parseSectionMapping("image_version", n, true, true) {
 		switch e.id {
+		case "types":
+			ret.Types = p.parseStringOrStringSequence("types", e.val)
 		case "names":
-			ret.Names = p.parseStringSequence("names", e.val, false)
+			ret.Names = p.parseStringOrStringSequence("names", e.val)
 		case "versions":
-			ret.Versions = p.parseStringSequence("versions", e.val, false)
+			ret.Versions = p.parseStringOrStringSequence("versions", e.val)
 		default:
-			p.unexpectedKey(e.key, "image_version", []string{"names", "versions"})
+			p.unexpectedKey(e.key, "image_version", []string{"types", "names", "versions"})
 		}
 	}
 
@@ -875,7 +983,7 @@ func (p *parser) parseEvents(n *yaml.Node) []Event {
 
 		return ret
 	default:
-		p.errorf(n, "\"on\" section value is expected to be mapping or sequence but found %s node", nodeKindName(n.Kind))
+		p.typeErrorf(n, "\"on\" section value is expected to be mapping or sequence but found %s node", nodeKindName(n.Kind))
 		return nil
 	}
 }
@@ -930,6 +1038,10 @@ func (p *parser) parseDefaults(pos *Pos, n *yaml.Node) *Defaults {
 			continue
 		}
 		ret.Run = &DefaultsRun{Pos: e.key.Pos}
+		if expr := p.mayParseExpression(e.val); expr != nil {
+			ret.Run.Expression = expr
+			continue
+		}
 
 		for e := range p.parseSectionMapping("run", e.val, false, true) {
 			switch e.id {
@@ -953,6 +1065,10 @@ func (p *parser) parseDefaults(pos *Pos, n *yaml.Node) *Defaults {
 // https://docs.github.com/en/actions/learn-github-actions/workflow-syntax-for-github-actions#jobsjob_idconcurrency
 func (p *parser) parseConcurrency(pos *Pos, n *yaml.Node) *Concurrency {
 	ret := &Concurrency{Pos: pos}
+	if expr := p.mayParseExpression(n); expr != nil {
+		ret.Expression = expr
+		return ret
+	}
 
 	if n.Kind == yaml.ScalarNode {
 		ret.Group = p.parseString(n, false)
@@ -970,6 +1086,9 @@ func (p *parser) parseConcurrency(pos *Pos, n *yaml.Node) *Concurrency {
 				continue
 			}
 			ret.Queue = newString(e.val)
+			if ret.Queue.ContainsExpression() {
+				continue
+			}
 			switch ret.Queue.Value {
 			case "single", "max":
 				// ok
@@ -992,6 +1111,10 @@ func (p *parser) parseConcurrency(pos *Pos, n *yaml.Node) *Concurrency {
 // https://docs.github.com/en/actions/learn-github-actions/workflow-syntax-for-github-actions#jobsjob_idenvironment
 func (p *parser) parseEnvironment(pos *Pos, n *yaml.Node) *Environment {
 	ret := &Environment{Pos: pos}
+	if expr := p.mayParseExpression(n); expr != nil {
+		ret.Expression = expr
+		return ret
+	}
 
 	if n.Kind == yaml.ScalarNode {
 		ret.Name = p.parseString(n, false)
@@ -1033,12 +1156,27 @@ func (p *parser) parseOutputs(n *yaml.Node) map[string]*Output {
 // does not accept, as well as any tag other than "!!str" on a quoted or block scalar.
 // https://github.com/actions/runner/blob/258d6c857db3519913f7deb6004b60172f8043ae/src/Sdk/WorkflowParser/Conversion/YamlObjectReader.cs#L36-L105
 func (p *parser) checkRawYAMLTag(n *yaml.Node) bool {
+	if message := rawYAMLTagError(n); message != "" {
+		p.error(n, message)
+		return false
+	}
+	return true
+}
+
+// Retain tag diagnostics in values whose invalid mapping key prevents decoding.
+func (p *parser) checkRawYAMLTags(n *yaml.Node) {
+	p.checkRawYAMLTag(n)
+	for _, child := range n.Content {
+		p.checkRawYAMLTags(child)
+	}
+}
+
+func rawYAMLTagError(n *yaml.Node) string {
 	if n.Kind != yaml.ScalarNode || n.Style&yaml.TaggedStyle == 0 || n.Tag == yamlTagStr {
-		return true
+		return ""
 	}
 	if n.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle|yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
-		p.errorf(n, "tag of a quoted or block scalar must be \"!!str\" but got %q", n.Tag)
-		return false
+		return fmt.Sprintf("tag of a quoted or block scalar must be \"!!str\" but got %q", n.Tag)
 	}
 	var ok bool
 	switch n.Tag {
@@ -1051,13 +1189,12 @@ func (p *parser) checkRawYAMLTag(n *yaml.Node) bool {
 	case yamlTagFloat:
 		ok = isCoreSchemaFloat(n.Value)
 	default:
-		p.errorf(n, "tag of a matrix scalar must be one of \"!!str\", \"!!bool\", \"!!int\", \"!!float\", \"!!null\" but got %q", n.Tag)
-		return false
+		return fmt.Sprintf("tag of a YAML scalar must be one of \"!!str\", \"!!bool\", \"!!int\", \"!!float\", \"!!null\" but got %q", n.Tag)
 	}
 	if !ok {
-		p.errorf(n, "invalid value %q for %q tag", n.Value, n.Tag)
+		return fmt.Sprintf("invalid value %q for %q tag", n.Value, n.Tag)
 	}
-	return ok
+	return ""
 }
 
 func (p *parser) parseRawYAMLValue(n *yaml.Node) RawYAMLValue {
@@ -1079,14 +1216,13 @@ func (p *parser) parseRawYAMLValue(n *yaml.Node) RawYAMLValue {
 	case yaml.MappingNode:
 		m := map[string]RawYAMLValue{}
 		for e := range p.parseMappingAt("matrix row value", n, true, false) {
-			p.checkRawYAMLTag(e.keyNode)
 			if v := p.parseRawYAMLValue(e.val); v != nil {
 				m[e.id] = v
 			}
 		}
 		return &RawYAMLObject{m, posAt(n)}
 	default:
-		p.errorf(n, "unexpected %s node on parsing value in matrix row", nodeKindName(n.Kind))
+		p.typeErrorf(n, "unexpected %s node on parsing value in matrix row", nodeKindName(n.Kind))
 		return nil
 	}
 }
@@ -1115,7 +1251,6 @@ func (p *parser) parseMatrixCombinations(sec string, n *yaml.Node) *MatrixCombin
 
 		assigns := map[string]*MatrixAssign{}
 		for e := range p.parseMapping(sprintf("element in %q section", sec), c, false, false) {
-			p.checkRawYAMLTag(e.keyNode)
 			if v := p.parseRawYAMLValue(e.val); v != nil {
 				assigns[e.id] = &MatrixAssign{e.key, v}
 			}
@@ -1137,7 +1272,6 @@ func (p *parser) parseMatrix(pos *Pos, n *yaml.Node) *Matrix {
 	ret := &Matrix{Pos: pos, Rows: make(map[string]*MatrixRow)}
 
 	for e := range p.parseSectionMapping("matrix", n, false, false) {
-		p.checkRawYAMLTag(e.keyNode)
 		switch e.id {
 		case "include":
 			ret.Include = p.parseMatrixCombinations("include", e.val)
@@ -1184,6 +1318,10 @@ func (p *parser) parseMaxParallel(n *yaml.Node) *Int {
 // https://docs.github.com/en/actions/learn-github-actions/workflow-syntax-for-github-actions#jobsjob_idstrategy
 func (p *parser) parseStrategy(pos *Pos, n *yaml.Node) *Strategy {
 	ret := &Strategy{Pos: pos}
+	if expr := p.mayParseExpression(n); expr != nil {
+		ret.Expression = expr
+		return ret
+	}
 
 	for e := range p.parseSectionMapping("strategy", n, false, true) {
 		switch e.id {
@@ -1231,6 +1369,10 @@ func (p *parser) parseCredentials(pos *Pos, n *yaml.Node) *Credentials {
 // https://docs.github.com/en/actions/learn-github-actions/workflow-syntax-for-github-actions#jobsjob_idcontainer
 func (p *parser) parseContainer(sec string, pos *Pos, n *yaml.Node) *Container {
 	ret := &Container{Pos: pos}
+	if expr := p.mayParseExpression(n); expr != nil {
+		ret.Expression = expr
+		return ret
+	}
 	keys := []string{
 		"image",
 		"credentials",
@@ -1252,15 +1394,24 @@ func (p *parser) parseContainer(sec string, pos *Pos, n *yaml.Node) *Container {
 	for e := range p.parseSectionMapping(sec, n, false, true) {
 		switch e.id {
 		case "image":
-			ret.Image = p.parseString(e.val, false)
+			// An empty image disables a service container.
+			ret.Image = p.parseString(e.val, sec == "services")
 		case "credentials":
 			ret.Credentials = p.parseCredentials(e.key.Pos, e.val)
 		case "env":
 			ret.Env = p.parseEnv(e.val)
 		case "ports":
-			ret.Ports = p.parseStringSequence("ports", e.val, true)
+			if expr := p.mayParseExpression(e.val); expr != nil {
+				ret.PortsExpression = expr
+			} else {
+				ret.Ports = p.parseStringSequence("ports", e.val, true)
+			}
 		case "volumes":
-			ret.Volumes = p.parseStringSequence("volumes", e.val, true)
+			if expr := p.mayParseExpression(e.val); expr != nil {
+				ret.VolumesExpression = expr
+			} else {
+				ret.Volumes = p.parseStringSequence("volumes", e.val, true)
+			}
 		case "options":
 			ret.Options = p.parseString(e.val, true)
 		case "command":
@@ -1320,8 +1471,14 @@ func (p *parser) parseStepExecAction(entries []workflowMappingEntry, isDocker bo
 	for _, e := range entries {
 		switch e.id {
 		case "uses":
-			ret.Uses = p.parseString(e.val, false)
+			if p.checkString(e.val, false) {
+				ret.Uses = p.parseStaticString(e.val)
+			}
 		case "with":
+			if expr := p.mayParseExpression(e.val); expr != nil {
+				ret.InputsExpression = expr
+				continue
+			}
 			ret.Inputs = map[string]*Input{}
 			with := p.parseSectionMapping("with", e.val, false, false)
 			if isDocker {
@@ -1359,7 +1516,6 @@ func (p *parser) parseStepExecAction(entries []workflowMappingEntry, isDocker bo
 		}
 	}
 
-	// Note: `ret.Uses` is never `nil` because `parseStep` checks `uses` key in advance
 	return ret
 }
 
@@ -1373,7 +1529,7 @@ func (p *parser) parseStepExecRun(entries []workflowMappingEntry) *ExecRun {
 			ret.RunPos = e.key.Pos
 			ret.source = p.scriptSource(e.val)
 		case "shell":
-			ret.Shell = p.parseString(e.val, false)
+			ret.Shell = p.parseStaticString(e.val)
 		case "working-directory":
 			ret.WorkingDirectory = p.parseString(e.val, false)
 		case "id", "if", "name", "env", "continue-on-error", "timeout-minutes", "background":
@@ -1410,10 +1566,9 @@ func (p *parser) parseStepExecWait(entries []workflowMappingEntry) *ExecWait {
 			waitGiven = true
 			ret.Names = p.parseStringOrStringSequence("wait", e.val)
 		case "wait-all":
-			// A bare 'wait-all:' is equivalent to 'wait-all: true'. GitHub also accepts an
-			// explicit boolean but rejects false because it would make the step a no-op.
+			// The schema allows null or a static boolean; false is diagnosed as a no-op.
 			if e.val.Tag != yamlTagNull {
-				if b := p.parseBool(e.val); e.val.Tag == yamlTagBool && b != nil && !b.Value {
+				if b := p.parseLiteralBool(e.val); b != nil && !b.Value {
 					p.error(e.val, "the value of \"wait-all\" must be true or omitted")
 				}
 			}
@@ -1504,7 +1659,7 @@ func (p *parser) parseStep(n *yaml.Node) *Step {
 	for _, e := range entries {
 		switch e.id {
 		case "id":
-			ret.ID = p.parseString(e.val, false)
+			ret.ID = p.parseStaticString(e.val)
 		case "if":
 			ret.If = p.parseString(e.val, false)
 		case "name":
@@ -1518,7 +1673,11 @@ func (p *parser) parseStep(n *yaml.Node) *Step {
 		case "background":
 			ret.Background = p.parseBool(e.val)
 		case "uses":
-			if strings.HasPrefix(e.val.Value, "docker://") {
+			uses := e.val.Value
+			if literal := literalExpressionValue(uses); literal != nil {
+				uses = *literal
+			}
+			if strings.HasPrefix(uses, "docker://") {
 				kind = isDocker
 			} else {
 				kind = isAction
@@ -1574,12 +1733,12 @@ func (p *parser) parseSteps(n *yaml.Node) []*Step {
 // https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idruns-on
 func (p *parser) parseRunsOn(n *yaml.Node) *Runner {
 	if expr := p.mayParseExpression(n); expr != nil {
-		return &Runner{nil, expr, nil}
+		return &Runner{Expression: expr}
 	}
 
 	if n.Kind == yaml.ScalarNode || n.Kind == yaml.SequenceNode {
 		labels := p.parseStringOrStringSequence("runs-on", n)
-		return &Runner{labels, nil, nil}
+		return &Runner{Labels: labels}
 	}
 
 	r := &Runner{}
@@ -1602,6 +1761,9 @@ func (p *parser) parseRunsOn(n *yaml.Node) *Runner {
 }
 
 func (p *parser) parseSnapshot(pos *Pos, n *yaml.Node) *Snapshot {
+	if expr := p.mayParseExpression(n); expr != nil {
+		return &Snapshot{Expression: expr}
+	}
 	switch n.Kind {
 	case yaml.ScalarNode:
 		return &Snapshot{ImageName: p.parseString(n, false)}
@@ -1624,8 +1786,19 @@ func (p *parser) parseSnapshot(pos *Pos, n *yaml.Node) *Snapshot {
 		}
 		return ret
 	default:
-		p.errorf(n, "\"snapshot\" section value must be string or mapping but found %s node", nodeKindName(n.Kind))
+		p.typeErrorf(n, "\"snapshot\" section value must be string or mapping but found %s node", nodeKindName(n.Kind))
 		return nil
+	}
+}
+
+// jobKeyRequiresSteps is shared with file-based reusable workflow metadata.
+// A job containing one of these keys cannot populate Job.WorkflowCall.
+func jobKeyRequiresSteps(key string) bool {
+	switch key {
+	case "runs-on", "environment", "outputs", "env", "defaults", "steps", "timeout-minutes", "cancel-timeout-minutes", "continue-on-error", "container", "services", "snapshot":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1634,24 +1807,16 @@ func (p *parser) parseJob(id *String, n *yaml.Node) *Job {
 	ret := &Job{ID: id, Pos: id.Pos}
 	call := &WorkflowCall{}
 
-	// Only below keys are allowed on reusable workflow call
-	// https://docs.github.com/en/actions/learn-github-actions/reusing-workflows#supported-keywords-for-jobs-that-call-a-reusable-workflow
-	//   - jobs.<job_id>.name
-	//   - jobs.<job_id>.uses
-	//   - jobs.<job_id>.with
-	//   - jobs.<job_id>.with.<input_id>
-	//   - jobs.<job_id>.secrets
-	//   - jobs.<job_id>.secrets.<secret_id>
-	//   - jobs.<job_id>.needs
-	//   - jobs.<job_id>.if
-	//   - jobs.<job_id>.permissions
-
+	// jobKeyRequiresSteps identifies keys excluded from reusable workflow calls.
 	// https://docs.github.com/en/actions/using-workflows/reusing-workflows#supported-keywords-for-jobs-that-call-a-reusable-workflow
 	var stepsOnlyKey *String
 	var callOnlyKey *String
 
 	for e := range p.parseMapping(sprintf("%q job", id.Value), n, false, true) {
 		k, v := e.key, e.val
+		if jobKeyRequiresSteps(e.id) {
+			stepsOnlyKey = k
+		}
 		switch e.id {
 		case "name":
 			ret.Name = p.parseString(v, true)
@@ -1665,43 +1830,38 @@ func (p *parser) parseJob(id *String, n *yaml.Node) *Job {
 			}
 		case "runs-on":
 			ret.RunsOn = p.parseRunsOn(v)
-			stepsOnlyKey = k
 		case "permissions":
 			ret.Permissions = p.parsePermissions(k.Pos, v)
+		case "cache-mode":
+			ret.CacheMode = p.parseCacheMode(v)
 		case "environment":
 			ret.Environment = p.parseEnvironment(k.Pos, v)
-			stepsOnlyKey = k
 		case "concurrency":
 			ret.Concurrency = p.parseConcurrency(k.Pos, v)
 		case "outputs":
 			ret.Outputs = p.parseOutputs(v)
-			stepsOnlyKey = k
 		case "env":
 			ret.Env = p.parseEnv(v)
-			stepsOnlyKey = k
 		case "defaults":
 			ret.Defaults = p.parseDefaults(k.Pos, v)
-			stepsOnlyKey = k
 		case "if":
 			ret.If = p.parseString(v, false)
 		case "steps":
 			ret.Steps = p.parseSteps(v)
-			stepsOnlyKey = k
 		case "timeout-minutes":
 			ret.TimeoutMinutes = p.parseTimeoutMinutes(v)
-			stepsOnlyKey = k
+		case "cancel-timeout-minutes":
+			ret.CancelTimeoutMinutes = p.parseFloat(v)
 		case "strategy":
 			ret.Strategy = p.parseStrategy(k.Pos, v)
 		case "continue-on-error":
 			ret.ContinueOnError = p.parseBool(v)
-			stepsOnlyKey = k
 		case "container":
 			ret.Container = p.parseContainer("container", k.Pos, v)
-			stepsOnlyKey = k
 		case "services":
 			ret.Services = p.parseServices(v)
 		case "uses":
-			call.Uses = p.parseString(v, false)
+			call.Uses = p.parseStaticString(v)
 			callOnlyKey = k
 		case "with":
 			call.Inputs = map[string]*WorkflowCallInput{}
@@ -1739,6 +1899,7 @@ func (p *parser) parseJob(id *String, n *yaml.Node) *Job {
 				"needs",
 				"runs-on",
 				"permissions",
+				"cache-mode",
 				"environment",
 				"concurrency",
 				"outputs",
@@ -1747,6 +1908,7 @@ func (p *parser) parseJob(id *String, n *yaml.Node) *Job {
 				"if",
 				"steps",
 				"timeout-minutes",
+				"cancel-timeout-minutes",
 				"strategy",
 				"continue-on-error",
 				"container",
@@ -1763,7 +1925,7 @@ func (p *parser) parseJob(id *String, n *yaml.Node) *Job {
 		if stepsOnlyKey != nil {
 			p.errorfAt(
 				stepsOnlyKey.Pos,
-				"when a reusable workflow is called with \"uses\", %q is not available. only following keys are allowed: \"name\", \"uses\", \"with\", \"secrets\", \"needs\", \"if\", and \"permissions\" in job %q",
+				"when a reusable workflow is called with \"uses\", %q is not available. only following keys are allowed: \"name\", \"uses\", \"with\", \"secrets\", \"needs\", \"if\", \"permissions\", \"cache-mode\", \"strategy\", and \"concurrency\" in job %q",
 				stepsOnlyKey.Value,
 				id.Value,
 			)
@@ -1823,10 +1985,14 @@ func (p *parser) parse(n *yaml.Node) *Workflow {
 		switch e.id {
 		case "name":
 			w.Name = p.parseString(v, true)
+		case "description":
+			w.Description = p.parseString(v, true)
 		case "on":
 			w.On = p.parseEvents(v)
 		case "permissions":
 			w.Permissions = p.parsePermissions(k.Pos, v)
+		case "cache-mode":
+			w.CacheMode = p.parseCacheMode(v)
 		case "env":
 			w.Env = p.parseEnv(v)
 		case "defaults":
@@ -1840,9 +2006,11 @@ func (p *parser) parse(n *yaml.Node) *Workflow {
 		default:
 			p.unexpectedKey(k, "workflow", []string{
 				"name",
+				"description",
 				"run-name",
 				"on",
 				"permissions",
+				"cache-mode",
 				"env",
 				"defaults",
 				"concurrency",

@@ -3,6 +3,8 @@
 This is a script to update every release version reference in this repository.
 
 The complete set of version-bearing files and fields is declared in [`targets.go`](./targets.go).
+The Playground derives its version and links from Git during the Vite build, so its HTML is not a bump target.
+The Nix package version in `flake.nix` is a bump target.
 Each declaration names a file, a regular expression capturing the version, and the exact number of
 occurrences expected in that file.
 
@@ -15,15 +17,17 @@ This script does:
 - verify no version reference in a declared file is left undeclared
 - rewrite every declared reference and verify the result on disk
 - move the `Unreleased` entries of `CHANGELOG.md` into a dated section for the new version
+- build and check the updated Nix package with the committed dependency lock, stopping on failure
 - optionally create the version bump commit, the version tag, and push them
 
 Nothing is written unless every file passes validation, and no commit, tag, or push happens unless
-the rewritten repository is verified to reference the new version everywhere.
+the rewritten repository is verified to reference the new version everywhere and the Nix checks pass.
 
 ## Prerequisites
 
 - Go
 - `git`
+- Nix with `nix-command` and `flakes` enabled, locally or in an installed WSL distribution
 
 ## Usage
 
@@ -31,7 +35,7 @@ the rewritten repository is verified to reference the new version everywhere.
 go run ./scripts/bump-version [FLAGS] VERSION
 ```
 
-Report every declared version reference without modifying anything.
+Report every declared version reference without modifying anything, and fail if the references disagree on the release version.
 
 ```sh
 go run ./scripts/bump-version -check
@@ -50,11 +54,25 @@ go run ./scripts/bump-version -commit 1.2.3
 ```
 
 Update all references, create the bump commit and the tag, and push both to `origin`. Pushing the
-tag starts [the release workflow](../../.github/workflows/release.yaml).
+tag starts [the release workflow](../../.github/workflows/release.yml).
 
 ```sh
 go run ./scripts/bump-version -push 1.2.3
 ```
+
+The same command works on Windows. The script uses Nix from `PATH` when available. Otherwise, on Windows,
+it checks installed WSL distributions and selects the first one that can run Nix, including installations
+loaded by the user's login profile. Go and Git keep running on Windows against the same checkout.
+Use `-nix-command` only to override that automatic selection.
+
+Detection runs before any files change. The script then runs
+`nix flake check --no-update-lock-file --print-build-logs` after updating the version and changelog.
+On failure, it leaves those updates for inspection without committing or tagging. Fix the failure and rerun the Nix
+check before committing and tagging manually. A normal bump requires a clean checkout.
+
+The check does not refresh `flake.lock` or `vendorHash`. Update Nixpkgs deliberately with `nix flake update nixpkgs`,
+and update the Go dependency hash when dependencies change, as described in
+[Nix development](../../CONTRIBUTING.md#nix-development). `-check` and `-notes` do not require Nix.
 
 Print the release notes of a version, which is what the release workflow publishes.
 

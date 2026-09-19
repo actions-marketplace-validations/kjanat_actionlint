@@ -249,13 +249,9 @@ func TestRuleRunnerLabelCheckLabels(t *testing.T) {
 			errs:   []string{`label "ubuntu-latest" conflicts with label`},
 		},
 		{
-			what:   "GH-hosted labels conflicts with multiple matrixes",
+			what:   "Repeated matrix references select the same value",
 			labels: []string{"${{matrix.os}}", "${{matrix.os}}"},
 			matrix: []string{"windows-latest", "macos-latest"},
-			errs: []string{
-				`label "windows-latest" conflicts with label "macos-latest"`,
-				`label "macos-latest" conflicts with label "windows-latest"`,
-			},
 		},
 		{
 			what:   "Linux labels version conflict",
@@ -308,9 +304,13 @@ func TestRuleRunnerLabelCheckLabels(t *testing.T) {
 			errs:   []string{`label "windows-11-arm" conflicts with label "windows-2025"`},
 		},
 		{
-			what:   "Windows 11 Arm image labels conflict",
+			what:   "Windows 11 Arm alias overlaps the VS2026 image during migration",
 			labels: []string{"windows-11-arm", "windows-11-vs2026-arm"},
-			errs:   []string{`label "windows-11-vs2026-arm" conflicts with label "windows-11-arm"`},
+		},
+		{
+			what:   "Windows 11 Arm migration does not accept an x64 image",
+			labels: []string{"windows-11-vs2026-arm", "windows-2025-vs2026"},
+			errs:   []string{`label "windows-2025-vs2026" conflicts with label "windows-11-vs2026-arm"`},
 		},
 		{
 			what:   "macOS XL and normal labels conflict",

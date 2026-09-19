@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -17,6 +18,75 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+var testRemoteActionYAML = map[string]string{
+	"https://raw.githubusercontent.com/kjanat/actions-shells/v0.1.0/action.yml": `
+name: Actions Shells
+inputs:
+  doctor:
+    required: false
+    default: "false"
+  runtimes:
+    required: false
+    default: ""
+outputs:
+  bin-dir: {}
+  cli: {}
+  version: {}
+runs:
+  using: node24
+  main: setup.mjs
+`,
+	"https://raw.githubusercontent.com/rhysd/changelog-from-release/v2.2.2/action/action.yml": `
+name: Run changelog-from-release
+inputs:
+  commit: {}
+  file:
+    required: true
+  github_token:
+    required: true
+  push: {}
+  version: {}
+`,
+	"https://raw.githubusercontent.com/rhysd/action-setup-vim/v1.0.0/action.yml": `
+name: Setup Vim
+inputs:
+  github-token: {}
+  neovim: {}
+  version: {}
+outputs:
+  executable: {}
+runs:
+  using: node12
+  main: src/index.js
+`,
+	"https://raw.githubusercontent.com/rhysd/action-setup-vim/v1/action.yml": `
+name: Setup Vim
+runs:
+  using: node20
+  main: src/index.js
+`,
+}
+
+func newTestGen(stdout, stderr, debug io.Writer) *gen {
+	g := newGen(stdout, stderr, debug)
+	g.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		body, ok := testRemoteActionYAML[req.URL.String()]
+		statusCode := http.StatusNotFound
+		status := "404 Not Found"
+		if ok {
+			statusCode = http.StatusOK
+			status = "200 OK"
+		}
+		return &http.Response{
+			StatusCode: statusCode,
+			Status:     status,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+	return g
 }
 
 // Normal cases
@@ -230,10 +300,10 @@ func TestFetchRemoteYAML(t *testing.T) {
 		t.Run(tc.registry, func(t *testing.T) {
 			f := filepath.Join("testdata", "registry", tc.registry)
 			stdout := &bytes.Buffer{}
-			stderr := io.Discard
-			status := newGen(stdout, stderr, io.Discard).run([]string{"test", "-r", f})
+			stderr := &bytes.Buffer{}
+			status := newTestGen(stdout, stderr, io.Discard).run([]string{"test", "-r", f})
 			if status != 0 {
-				t.Fatal("exit status is non-zero:", status)
+				t.Fatalf("exit status is non-zero: %d: %s", status, stderr.Bytes())
 			}
 
 			b, err := os.ReadFile(filepath.Join("testdata", "go", tc.want))
@@ -250,13 +320,45 @@ func TestFetchRemoteYAML(t *testing.T) {
 	}
 }
 
+func TestLighthouseMetadataTypoPreservesClassification(t *testing.T) {
+	fixture, err := os.ReadFile("../../testdata/action_metadata_lighthouse.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		tag, using string
+		outdated   bool
+	}{{"v10", "node16", true}, {"v11", "node20", false}} {
+		t.Run(tc.tag, func(t *testing.T) {
+			g := newGen(io.Discard, io.Discard, io.Discard)
+			g.rawRegistry = fmt.Appendf(nil, `[{"slug":"treosh/lighthouse-ci-action","tags":[%q]}]`, tc.tag)
+			g.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				body := bytes.ReplaceAll(fixture, []byte("node16"), []byte(tc.using))
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Request: req}, nil
+			})}
+			metadata, err := g.fetchRemote()
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := "treosh/lighthouse-ci-action@" + tc.tag
+			md := metadata[spec]
+			if md == nil || md.Name != "Lighthouse CI Action" || len(md.Inputs) != 1 || len(md.Outputs) != 1 || md.Runs.Using != tc.using {
+				t.Fatalf("Lighthouse metadata was lost: %+v", md)
+			}
+			if have := isOutdated(spec, md.Runs.Using); have != tc.outdated {
+				t.Fatalf("outdated = %v, want %v", have, tc.outdated)
+			}
+		})
+	}
+}
+
 func TestWriteOutdatedActionAsJSONL(t *testing.T) {
 	f := filepath.Join("testdata", "registry", "outdated.json")
 	stdout := &bytes.Buffer{}
-	stderr := io.Discard
-	status := newGen(stdout, stderr, io.Discard).run([]string{"test", "-r", f, "-f", "jsonl"})
+	stderr := &bytes.Buffer{}
+	status := newTestGen(stdout, stderr, io.Discard).run([]string{"test", "-r", f, "-f", "jsonl"})
 	if status != 0 {
-		t.Fatal("exit status is non-zero:", status)
+		t.Fatalf("exit status is non-zero: %d: %s", status, stderr.Bytes())
 	}
 
 	b, err := os.ReadFile(filepath.Join("testdata", "jsonl", "outdated.jsonl"))
@@ -320,10 +422,10 @@ func TestHelpOutput(t *testing.T) {
 func TestDetectNewRelease(t *testing.T) {
 	f := filepath.Join("testdata", "registry", "new_release.json")
 	stdout := &bytes.Buffer{}
-	stderr := io.Discard
-	status := newGen(stdout, stderr, io.Discard).run([]string{"test", "-d", "-r", f})
+	stderr := &bytes.Buffer{}
+	status := newTestGen(stdout, stderr, io.Discard).run([]string{"test", "-d", "-r", f})
 	if status != 2 {
-		t.Fatal("exit status is not 2:", status)
+		t.Fatalf("exit status is not 2: %d: %s", status, stderr.Bytes())
 	}
 	out := stdout.String()
 	want := "https://github.com/rhysd/action-setup-vim/tree/v1"
@@ -341,11 +443,11 @@ func TestDetectNoRelease(t *testing.T) {
 	for _, f := range files {
 		t.Run(f, func(t *testing.T) {
 			stdout := &bytes.Buffer{}
-			stderr := io.Discard
+			stderr := &bytes.Buffer{}
 			p := filepath.Join("testdata", "registry", f)
-			status := newGen(stdout, stderr, io.Discard).run([]string{"test", "-d", "-r", p})
+			status := newTestGen(stdout, stderr, io.Discard).run([]string{"test", "-d", "-r", p})
 			if status != 0 {
-				t.Fatal("exit status is non-zero:", status)
+				t.Fatalf("exit status is non-zero: %d: %s", status, stderr.Bytes())
 			}
 			out := stdout.String()
 			if out != "No new release was found\n" {
@@ -432,7 +534,7 @@ func TestCouldNotFetch(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	f := filepath.Join("testdata", "registry", "repo_not_found.json")
 
-	status := newGen(io.Discard, stderr, io.Discard).run([]string{"test", "-r", f})
+	status := newTestGen(io.Discard, stderr, io.Discard).run([]string{"test", "-r", f})
 	if status == 0 {
 		t.Fatal("exit status is unexpectedly zero")
 	}

@@ -1,6 +1,8 @@
 /.github/actionlint.yaml
 /.github/actionlint.yml
+/.cache/
 /.idea
+/.playwright-mcp/
 /.worktrees/
 /actionlint
 /actionlint-workflow-ast
@@ -11,9 +13,15 @@
 /coverage.html
 /coverage.out
 /crashers
+/dist/
+/distribution/*/dist/
 /env.sh
 /man/actionlint.1
 /man/actionlint.1.html
-/node_modules
+/packages/*/dist/
 /playground-dist
+/result
+/result-*
 /vendor/
+node_modules/
+.zed-save-backup-*

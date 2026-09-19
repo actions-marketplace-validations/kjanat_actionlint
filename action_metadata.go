@@ -12,7 +12,9 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
+//go:generate go run ./scripts/generate-action-metadata -runtimes
 //go:generate go run ./scripts/generate-popular-actions ./popular_actions.go
+//go:generate go run ./scripts/generate-action-metadata
 
 // ActionMetadataInput is input metadata in "inputs" section in action.yml metadata file.
 // https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#inputs
@@ -49,9 +51,13 @@ func (inputs *ActionMetadataInputs) UnmarshalYAML(n *yaml.Node) error {
 	md := make(ActionMetadataInputs, len(n.Content)/2)
 	for i := 0; i < len(n.Content); i += 2 {
 		k, v := n.Content[i].Value, n.Content[i+1]
+		v = actionSchemaNode(v)
+		if name := actionSchemaScalar(n.Content[i]); name != nil {
+			k = *name
+		}
 
 		var m actionInputMetadata
-		if err := v.Decode(&m); err != nil {
+		if err := actionMetadataFields(v).Decode(&m); err != nil {
 			return err
 		}
 
@@ -64,8 +70,8 @@ func (inputs *ActionMetadataInputs) UnmarshalYAML(n *yaml.Node) error {
 		// if we change the type of `DeprecationMessage` to `*string`.
 		dep := false
 		for i := 0; i < len(v.Content); i += 2 {
-			switch v.Content[i].Value {
-			case "deprecationMessage":
+			switch strings.ToLower(actionMetadataKey(v.Content[i])) {
+			case "deprecationmessage":
 				dep = true
 			case "description", "required", "default":
 				// OK
@@ -104,6 +110,9 @@ func (inputs *ActionMetadataOutputs) UnmarshalYAML(n *yaml.Node) error {
 	md := make(ActionMetadataOutputs, len(n.Content)/2)
 	for i := 0; i < len(n.Content); i += 2 {
 		k := n.Content[i].Value
+		if name := actionSchemaScalar(n.Content[i]); name != nil {
+			k = *name
+		}
 		id := strings.ToLower(k)
 		if _, ok := md[id]; ok {
 			return fmt.Errorf("output %q is duplicated", k)
@@ -113,6 +122,21 @@ func (inputs *ActionMetadataOutputs) UnmarshalYAML(n *yaml.Node) error {
 
 	*inputs = md
 	return nil
+}
+
+// ActionExprString is a string value from action metadata that may contain
+// ${{ }} expressions, together with the position of the value node in the metadata file.
+type ActionExprString struct {
+	Value  string `json:"value"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
+}
+
+// ActionKeyValue is a named, positioned string in action metadata, used for input defaults
+// and composite step "with" and "env" mappings.
+type ActionKeyValue struct {
+	Name  string           `json:"name"`
+	Value ActionExprString `json:"value"`
 }
 
 // ActionCompositeStep is a step in "steps" section in "runs" section of action.yaml for a
@@ -128,9 +152,25 @@ type ActionCompositeStep struct {
 	// mapping.
 	IsMapping bool `json:"is_mapping"`
 	// Keys is the key names of the step mapping in file order.
-	Keys  []string `json:"keys"`
-	run   *string
-	shell *string
+	Keys []string `json:"keys"`
+	// If is the "if" key value when it is a string.
+	If *ActionExprString `json:"if"`
+	// Run is the "run" key value when it is a string. It is nil when the key is absent or its
+	// value is not a string.
+	Run *ActionExprString `json:"run"`
+	// WorkingDirectory is the "working-directory" key value when it is a string.
+	WorkingDirectory *ActionExprString `json:"working_directory"`
+	// StepName is the "name" key value when it is a string.
+	StepName *ActionExprString `json:"name"`
+	// With holds each "with" input value that is a string.
+	With []*ActionKeyValue `json:"with"`
+	// Env holds each "env" variable value that is a string.
+	Env             []*ActionKeyValue `json:"env"`
+	shell           *ActionExprString
+	continueOnError *ActionExprString
+	withExpr        *ActionExprString
+	envExpr         *ActionExprString
+	id              *ActionExprString
 	// Uses is the value of "uses" key in the step. It is nil when the key is absent or its value
 	// is not a string.
 	Uses *string `json:"uses"`
@@ -151,28 +191,78 @@ func (s *ActionCompositeStep) UnmarshalYAML(n *yaml.Node) error {
 	s.Keys = make([]string, 0, len(n.Content)/2)
 	for i := 0; i < len(n.Content); i += 2 {
 		k, v := n.Content[i], n.Content[i+1]
-		s.Keys = append(s.Keys, k.Value)
-		switch strings.ToLower(k.Value) {
+		key := actionMetadataKey(k)
+		s.Keys = append(s.Keys, key)
+		switch strings.ToLower(key) {
+		case "id":
+			s.id = yamlActionExprString(v)
+			if s.id != nil {
+				if literal := literalExpressionValue(s.id.Value); literal != nil {
+					s.id.Value = *literal
+				}
+			}
+		case "if":
+			s.If = yamlActionExprString(v)
 		case "run":
-			s.run = yamlStringScalar(v)
+			s.Run = yamlActionExprString(v)
+		case "working-directory":
+			s.WorkingDirectory = yamlActionExprString(v)
+		case "name":
+			s.StepName = yamlActionExprString(v)
+		case "with":
+			s.With = yamlKeyValues(v)
+			s.withExpr = yamlExprString(v)
+		case "env":
+			s.Env = yamlKeyValues(v)
+			s.envExpr = yamlExprString(v)
 		case "shell":
-			s.shell = yamlStringScalar(v)
+			s.shell = yamlActionExprString(v)
+		case "continue-on-error":
+			s.continueOnError = yamlExprString(v)
 		case "uses":
-			s.Uses = yamlStringScalar(v)
+			s.Uses = actionSchemaScalar(v)
 		}
 	}
 	return nil
 }
 
-func yamlStringScalar(n *yaml.Node) *string {
+func yamlActionExprString(n *yaml.Node) *ActionExprString {
+	n = actionSchemaNode(n)
+	if value := yamlExprString(n); value != nil {
+		return value
+	}
+	if value := actionSchemaScalar(n); value != nil {
+		return &ActionExprString{Value: *value, Line: n.Line, Column: n.Column}
+	}
+	return nil
+}
+
+func yamlExprString(n *yaml.Node) *ActionExprString {
 	for n.Kind == yaml.AliasNode && n.Alias != nil && n.Alias.Kind != yaml.AliasNode {
 		n = n.Alias
 	}
 	if n.Kind == yaml.ScalarNode && n.Tag == "!!str" {
-		s := n.Value
-		return &s
+		return &ActionExprString{Value: n.Value, Line: n.Line, Column: n.Column}
 	}
 	return nil
+}
+
+func yamlKeyValues(n *yaml.Node) []*ActionKeyValue {
+	for n.Kind == yaml.AliasNode && n.Alias != nil && n.Alias.Kind != yaml.AliasNode {
+		n = n.Alias
+	}
+	if n.Kind != yaml.MappingNode {
+		return nil
+	}
+	kvs := make([]*ActionKeyValue, 0, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		v := yamlExprString(n.Content[i+1])
+		if v == nil {
+			continue // non-string values (bool/number) cannot hold ${{ }}
+		}
+		kvs = append(kvs, &ActionKeyValue{Name: actionMetadataKey(n.Content[i]), Value: *v})
+	}
+	return kvs
 }
 
 type actionCompositeSteps []*ActionCompositeStep
@@ -208,6 +298,8 @@ func (ss *actionCompositeSteps) UnmarshalYAML(n *yaml.Node) error {
 // ActionMetadataRuns is "runs" section of action.yaml. It defines how the action is run.
 // https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#runs
 type ActionMetadataRuns struct {
+	// Plugin is the runner-internal plugin action entrypoint.
+	Plugin string `yaml:"plugin" json:"plugin,omitempty"`
 	// Using is `using` configuration of action.yaml. It defines what runner is used for the action.
 	Using string `yaml:"using" json:"using"`
 	// Main is `main` configuration of action.yaml for JavaScript action.
@@ -243,12 +335,55 @@ type ActionMetadataBranding struct {
 	Color string `yaml:"color"`
 }
 
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (r *ActionMetadataRuns) UnmarshalYAML(n *yaml.Node) error {
+	type runs ActionMetadataRuns
+	return actionMetadataFields(n).Decode((*runs)(r))
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (b *ActionMetadataBranding) UnmarshalYAML(n *yaml.Node) error {
+	type branding ActionMetadataBranding
+	return actionMetadataFields(n).Decode((*branding)(b))
+}
+
+func actionMetadataKey(n *yaml.Node) string {
+	if key := actionSchemaScalar(n); key != nil {
+		return *key
+	}
+	return n.Value
+}
+
+// actionMetadataFields normalizes schema field names in a shallow copy for
+// YAML struct decoding. User-defined mapping keys and source nodes retain
+// their spelling; the schema validator reads the original tree.
+func actionMetadataFields(node *yaml.Node) *yaml.Node {
+	n := actionSchemaNode(node)
+	if n.Kind != yaml.MappingNode {
+		return n
+	}
+	normalized := *n
+	normalized.Content = append([]*yaml.Node(nil), n.Content...)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key := *n.Content[i]
+		if value := actionSchemaScalar(&key); value != nil {
+			key.Kind, key.Tag, key.Value = yaml.ScalarNode, "!!str", strings.ToLower(*value)
+			if key.Value == "deprecationmessage" {
+				key.Value = "deprecationMessage"
+			}
+		}
+		normalized.Content[i] = &key
+	}
+	return &normalized
+}
+
 // ActionMetadata represents structure of action.yaml.
 // https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions
 type ActionMetadata struct {
-	dir  string
-	file string
-	src  []byte
+	dir        string
+	file       string
+	src        []byte
+	schemaRoot *yaml.Node
 	// Name is "name" field of action.yaml.
 	Name string `yaml:"name" json:"name"`
 	// Description is "description" field of action.yaml.
@@ -268,6 +403,82 @@ type ActionMetadata struct {
 	Runs ActionMetadataRuns `yaml:"runs" json:"runs"`
 	// Branding is "branding" field of action.yaml.
 	Branding ActionMetadataBranding `yaml:"branding" json:"-"`
+	// InputDefaults holds each string input default and its position in the metadata file.
+	InputDefaults []*ActionKeyValue `yaml:"-" json:"-"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler. In addition to the struct tags, it captures the
+// value and position of each input's "default" so that ${{ }} expressions used there can be
+// checked against the runner's input-default context.
+func (md *ActionMetadata) UnmarshalYAML(n *yaml.Node) error {
+	type metadata ActionMetadata // Alias type to avoid infinite recursion into this method
+	var m metadata
+	err := actionMetadataFields(n).Decode(&m)
+	// The popular-actions generator uses partial metadata after tolerated input errors.
+	*md = ActionMetadata(m)
+	// The runner turns a single string-literal expression into a literal before
+	// dispatching the runtime or resolving entrypoint files.
+	for _, value := range []*string{
+		&md.Name, &md.Description, &md.Runs.Using, &md.Runs.Plugin,
+		&md.Runs.Main, &md.Runs.Pre, &md.Runs.Post,
+		&md.Runs.PreIf, &md.Runs.PostIf, &md.Runs.Image,
+		&md.Runs.Entrypoint, &md.Runs.PreEntrypoint, &md.Runs.PostEntrypoint,
+	} {
+		if literal := literalExpressionValue(*value); literal != nil {
+			*value = *literal
+		}
+	}
+	md.schemaRoot = n
+	md.InputDefaults = collectInputDefaults(n)
+	return err
+}
+
+// collectInputDefaults walks the raw metadata mapping node and returns the "default" value of
+// every input that is a string, together with its position.
+func collectInputDefaults(n *yaml.Node) []*ActionKeyValue {
+	for n.Kind == yaml.AliasNode && n.Alias != nil && n.Alias.Kind != yaml.AliasNode {
+		n = n.Alias
+	}
+	if n.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	var inputs *yaml.Node
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if strings.EqualFold(actionMetadataKey(n.Content[i]), "inputs") {
+			inputs = n.Content[i+1]
+			break
+		}
+	}
+	if inputs == nil {
+		return nil
+	}
+	for inputs.Kind == yaml.AliasNode && inputs.Alias != nil && inputs.Alias.Kind != yaml.AliasNode {
+		inputs = inputs.Alias
+	}
+	if inputs.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	var out []*ActionKeyValue
+	for i := 0; i+1 < len(inputs.Content); i += 2 {
+		name, def := actionMetadataKey(inputs.Content[i]), inputs.Content[i+1]
+		for def.Kind == yaml.AliasNode && def.Alias != nil && def.Alias.Kind != yaml.AliasNode {
+			def = def.Alias
+		}
+		if def.Kind != yaml.MappingNode {
+			continue
+		}
+		for j := 0; j+1 < len(def.Content); j += 2 {
+			if !strings.EqualFold(actionMetadataKey(def.Content[j]), "default") {
+				continue
+			}
+			if v := yamlExprString(def.Content[j+1]); v != nil {
+				out = append(out, &ActionKeyValue{Name: name, Value: *v})
+			}
+		}
+	}
+	return out
 }
 
 // Dir returns a directory path of the action.

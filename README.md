@@ -2,10 +2,11 @@
 
 [![CI Status][ci-badge]][ci]
 [![API Document][apidoc-badge]][apidoc]
+[![Sponsor this project][sponsor-badge]][sponsor]
 
 [actionlint][repo] is a static checker for GitHub Actions workflow files. [Try it online!][playground]
 
-This is an actively maintained fork of [rhysd/actionlint][upstream]. It carries the upstream checks plus opt-in [policy checks][config], composite action step validation, shell completion, and a first-party GitHub Action, and it ships attested binaries, a Docker image on [GHCR][ghcr] and [Docker Hub][dockerhub], and a Go module at `actionlint.kjanat.dev`. Report problems with this fork [here][issue-form], not upstream.
+This is an actively maintained fork of [rhysd/actionlint][upstream]. It carries the upstream checks plus cache safety policies enabled by default, configurable opt-in [policy checks][config], composite action step validation, shell completion, and a first-party GitHub Action, and it ships attested binaries, a Docker image on [GHCR][ghcr] and [Docker Hub][dockerhub], and a Go module at `actionlint.kjanat.dev`. Report problems through [this fork's issue tracker][issue-form].
 
 Features:
 
@@ -21,9 +22,18 @@ Features:
 See the [full list][checks] of checks done by actionlint.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/actionlint-dark.gif">
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/actionlint-light.gif">
-  <img alt="A terminal running actionlint on a workflow file, reporting each problem with the offending line underlined" src="docs/screenshots/actionlint-light.gif">
+  <source
+    media="(prefers-color-scheme: dark)"
+    srcset="docs/screenshots/actionlint-dark.gif"
+  >
+  <source
+    media="(prefers-color-scheme: light)"
+    srcset="docs/screenshots/actionlint-light.gif"
+  >
+  <img
+    alt="A terminal running actionlint on a workflow file, reporting each problem with the offending line underlined"
+    src="docs/screenshots/actionlint-light.gif"
+  >
 </picture>
 
 <details><summary><h3>Example of a broken workflow</h3></summary>
@@ -58,6 +68,8 @@ jobs:
 `docs/screenshots/actionlint.yaml`:
 
 ```yaml
+# yaml-language-server: $schema=https://cdn.jsdelivr.net/npm/@kjanat/actionlint/actionlint.schema.json
+---
 policy:
   require-commit-hash: true
 ```
@@ -79,7 +91,7 @@ demo-workflow.yaml:18:9: step must run script with "run" section or run action w
    |         ^~~~~
 ```
 
-**This fork 1.13.0 reports 3: `expression`, `require-commit-hash`, `parallel-steps`**
+**This fork 1.17.0 reports 3: `expression`, `require-commit-hash`, `parallel-steps`**
 
 ```console
 demo-workflow.yaml:11:22: type of expression at "float number value" must be number but found type string [expression]
@@ -102,12 +114,21 @@ demo-workflow.yaml:18:15: "api" is not the ID of a preceding background step. "w
 
 ## Quick start
 
-Install `actionlint` command by downloading [the released binary][releases], using the download script, running the Docker image, using the repository as a GitHub Action, or by `go install`. See
-[the installation document][install] for more details like how to manage the command with several package managers or run via Docker container.
+Install with [npm](docs/install.md#npm), [Homebrew](docs/install.md#homebrew), [AUR](docs/install.md#arch-linux),
+[Scoop](docs/install.md#scoop), or [mise](docs/install.md#mise), or download [a release archive][releases].
+See [the installation document][install] for all options. To run it through npm:
+
+```sh
+npx @kjanat/actionlint
+```
+
+With a Go toolchain, install it from source:
 
 ```sh
 go install actionlint.kjanat.dev/cmd/actionlint@latest
 ```
+
+<sub><em><code>actionlint.kjanat.dev</code> is a <a href="https://pkg.go.dev/cmd/go#hdr-Fully_qualified_import_paths" title="Fully-qualified import paths">Go vanity import path</a>. The Go toolchain resolves it to <a href="https://github.com/kjanat/actionlint" title="https://github.com/kjanat/actionlint">this GitHub repository</a>, where the source, releases, and issue tracker live. Further reading available here: <a href="https://go.dev/ref/mod#goproxy-protocol" title="GOPROXY protocol">GOPROXY protocol</a>. Check for yourself: </em><code>curl https://proxy.golang.org/actionlint.kjanat.dev/@latest</code></sub>
 
 Basically all you need to do is run the `actionlint` command in your repository. actionlint automatically detects workflows and checks errors. actionlint focuses on finding out mistakes. It tries to catch errors as much as possible and make false positives as minimal as possible.
 
@@ -154,7 +175,10 @@ On a daemon-less runner such as `ubuntu-slim`, download and run the binary inste
     ./actionlint -color
 ```
 
-The moving `v1` tag follows compatible v1 releases. `v1.13.0` is a versioned release tag, but only a full-length commit SHA provides an immutable action reference.
+The moving `v1` tag follows compatible v1 releases, and `v1.16` follows v1.16 patch releases. These tags point to a
+commit immediately after the release that pins the published container image by digest. `v1.17.0` is a versioned release tag.
+For an immutable action reference with a pinned image, use the full commit SHA resolved from a
+floating tag.
 
 <details><summary><h3>Inputs</h3></summary>
 
@@ -212,7 +236,7 @@ Workflow files can be checked on every commit with [pre-commit][pre-commit]. Add
 ---
 repos:
   - repo: https://github.com/kjanat/actionlint
-    rev: v1.13.0
+    rev: v1.17.0
     hooks: [id: actionlint]
 ```
 
@@ -236,11 +260,14 @@ See [the usage document][usage] for the pinned ShellCheck build and how to choos
 ## Documents
 
 - [Checks][checks]: Full list of all checks done by actionlint with example inputs, outputs, and playground links.
-- [Installation][install]: Installation instructions. Prebuilt binaries, a Docker image, building from source, a download script (for CI), supports by several package managers are available.
+- [Installation][install]: Install with npm, Homebrew, AUR, Scoop, aqua, mise, the community pip/uv wrapper, release archives, the download script, Docker, or Go. Includes the status of WinGet and upstream-only package names.
 - [Usage][usage]: How to use `actionlint` command locally or on GitHub Actions, the online playground, an official Docker image, and integrations with reviewdog, Problem Matchers, super-linter, pre-commit, VS Code.
-- [Configuration][config]: How to configure actionlint behavior. Currently, the labels of self-hosted runners, the configuration variables, and ignore patterns of errors for each file paths can be set.
+- [Configuration][config]: Runner labels, variables, secrets, default permissions, error filters, and opt-in policy checks, with YAML Language Server schema support.
 - [Go API][api]: How to use actionlint as Go library.
+- [Schema audit](docs/schema-audit.md): Pinned upstream definitions, compatibility fixes, validation evidence, and retained differences.
+- [Expression behavior](docs/expression-behavior.md): Reproduce GitHub's runtime behavior, understand parser differences, and avoid surprising workflow decisions.
 - [References][refs]: Links to resources.
+- [GitHub Actions changelog][github-changelog]: Browse and search the latest entries from GitHub's Actions changelog feed.
 
 ## Bug reporting
 
@@ -252,12 +279,15 @@ See the [contribution guide](./CONTRIBUTING.md) for more details.
 
 actionlint is distributed under [the MIT license](./LICENSE.txt).
 
-[ci-badge]: https://github.com/kjanat/actionlint/actions/workflows/ci.yaml/badge.svg
-[ci]: https://github.com/kjanat/actionlint/actions/workflows/ci.yaml
+[ci-badge]: https://github.com/kjanat/actionlint/actions/workflows/ci.yml/badge.svg
+[ci]: https://github.com/kjanat/actionlint/actions/workflows/ci.yml
 [apidoc-badge]: https://pkg.go.dev/badge/actionlint.kjanat.dev.svg
 [apidoc]: https://pkg.go.dev/actionlint.kjanat.dev
+[sponsor-badge]: https://img.shields.io/badge/Sponsor-ea4aaa?logo=githubsponsors&logoColor=white
+[sponsor]: https://github.com/sponsors/kjanat
 [repo]: https://github.com/kjanat/actionlint
 [playground]: https://kjanat.github.io/actionlint/
+[github-changelog]: https://actionlint.kjanat.dev/github-changelog/
 [pre-commit]: https://pre-commit.com
 [upstream]: https://github.com/rhysd/actionlint
 [ghcr]: https://github.com/kjanat/actionlint/pkgs/container/actionlint
@@ -268,10 +298,10 @@ actionlint is distributed under [the MIT license](./LICENSE.txt).
 [filter-pattern-doc]: https://docs.github.com/actions/using-workflows/workflow-syntax-for-github-actions#filter-pattern-cheat-sheet
 [script-injection-doc]: https://docs.github.com/actions/reference/security/secure-use#good-practices-for-mitigating-script-injection-attacks
 [releases]: https://github.com/kjanat/actionlint/releases
-[checks]: https://github.com/kjanat/actionlint/blob/v1.13.0/docs/checks.md
-[install]: https://github.com/kjanat/actionlint/blob/v1.13.0/docs/install.md
-[usage]: https://github.com/kjanat/actionlint/blob/v1.13.0/docs/usage.md
-[config]: https://github.com/kjanat/actionlint/blob/v1.13.0/docs/config.md
-[api]: https://github.com/kjanat/actionlint/blob/v1.13.0/docs/api.md
-[refs]: https://github.com/kjanat/actionlint/blob/v1.13.0/docs/reference.md
+[checks]: https://github.com/kjanat/actionlint/blob/v1.17.0/docs/checks.md
+[install]: https://github.com/kjanat/actionlint/blob/master/docs/install.md
+[usage]: https://github.com/kjanat/actionlint/blob/v1.17.0/docs/usage.md
+[config]: docs/config.md
+[api]: https://github.com/kjanat/actionlint/blob/v1.17.0/docs/api.md
+[refs]: https://github.com/kjanat/actionlint/blob/v1.17.0/docs/reference.md
 [issue-form]: https://github.com/kjanat/actionlint/issues/new
