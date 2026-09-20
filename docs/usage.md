@@ -761,9 +761,17 @@ Go APIs are available. See [the Go API document](api.md) for more details.
 
 ### reviewdog
 
+> [!NOTE]
+> [`reviewdog/action-actionlint` v1.76.0 installs this fork's v1.17.0](https://github.com/reviewdog/action-actionlint/blob/v1.76.0/scripts/install-actionlint.sh).
+> Check the installer at your pinned action revision to identify the distribution and version it runs.
+
+<!-- separator -->
+
 > [!WARNING]
-> `reviewdog/action-actionlint` uses a hard-coded installer for `rhysd/actionlint`.
-> It does NOT use this fork.
+> The [v1.76.0 entrypoint](https://github.com/reviewdog/action-actionlint/blob/v1.76.0/entrypoint.sh) does not preserve actionlint's exit status through its reporting pipeline.
+> An execution or configuration failure without parseable findings can therefore go unreported by reviewdog.
+> A successful reviewdog step alone does not establish that analysis completed successfully.
+> Tracked in reviewdog/action-actionlint#240.
 
 [reviewdog][reviewdog] is an automated review tool for various code hosting
 services. It officially [supports actionlint][reviewdog-actionlint]. You can
@@ -814,12 +822,7 @@ in the step of your workflow.
 When you change your workflow and the changed line causes a new error, CI will
 annotate the diff with the extracted error message.
 
-<img
-  src="https://cdn.jsdelivr.net/gh/rhysd/ss@5530c2526b44ad28dc12f91a3d71bcd57940f008/actionlint/problem-matcher.png"
-  alt="annotation by Problem Matchers"
-  width="715"
-  height="221"
-/>
+<img src="https://cdn.jsdelivr.net/gh/rhysd/ss@5530c2526b44ad28dc12f91a3d71bcd57940f008/actionlint/problem-matcher.png" alt="annotation by Problem Matchers" width="715" height="221" />
 
 ### super-linter
 
