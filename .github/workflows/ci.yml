@@ -22,7 +22,7 @@ jobs:
       - parallel:
           - uses: &SetupGo actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
             with: &GoMod { go-version-file: go.mod }
-          - uses: &SetupUv astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+          - uses: &SetupUv astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.1.0
             with: &NoCache { enable-cache: false }
       - name: Install pyflakes
         run: &InstallPyflakes uv tool install pyflakes; pyflakes --version
@@ -57,7 +57,7 @@ jobs:
         # actionlint passes --norc to shellcheck, ignoring .shellcheckrc.
         run: echo "::add-matcher::.github/actionlint-matcher.json"; ./actionlint -color -shellcheck 'shellcheck -o all'
 
-      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with: { use_oidc: true }
   wasm:
     name: Wasm
@@ -65,9 +65,9 @@ jobs:
     steps:
       - *ActCheckNocred
       - *GoGomod
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with: { node-version-file: .node-version, package-manager-cache: false }
-      - &Runner { uses: kjanat/runner@8baa9ee978cfed038b98741749673c788ff161d1 } # v0.26.1
+      - &Runner { uses: kjanat/runner@b32ea932a1813ae0be44e755c16df9f9f5ca86a4 } # v0.26.1
       - &Pandoc { name: Install Pandoc, uses: $/.github/actions/setup-pandoc }
       - name: Install JavaScript dependencies
         run: runner install --frozen
@@ -89,8 +89,8 @@ jobs:
           - *Runner
       - run: run make:man/actionlint.1
       - name: Install syft for SBOM generation
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
-      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with: { version: v2.18.0, args: release --snapshot --clean }
       - name: Smoke-test the linux/amd64 snapshot binary
         run: ./dist/linux_linux_amd64_v1/actionlint -version
@@ -140,7 +140,7 @@ jobs:
     steps:
       - *ActCheckNocred
       - name: Build image
-        uses: &DockerBuildPush docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: &DockerBuildPush docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.3.0
         with: { load: true, push: false, tags: actionlint:test }
       - name: Test Docker image
         run: docker container run
