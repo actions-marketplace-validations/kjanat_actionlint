@@ -56,7 +56,7 @@
     "LICENSE.txt"
   ],
   "dependencies": {
-    "ansispeck": "^0.4.2"
+    "ansispeck": "^0.4.3"
   },
   "optionalDependencies": {},
   "engines": {
